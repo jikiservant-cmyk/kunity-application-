@@ -1,0 +1,6 @@
+{
+  "name": "Sacco Management Platform",
+  "description": "A cooperative management platform with member and admin modules, handling wallets, loans, and transaction tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
