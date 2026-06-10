@@ -185,20 +185,29 @@ function AuthContent() {
   };
 
   const T = {
-    cDeep:   "#05071A",
-    cRich:   "#0C1A68",
-    cMid:    "#1540D4",
-    gold:    "#C8A83E",
-    goldLt:  "#F0D898",
-    blue:    "#2262F0",
-    text:    "#05071A",
-    sub:     "#6B7280",
-    border:  "#E4E9F4",
+    cDeep:   "#7C2D12",
+    cRich:   "#B45309",
+    cMid:    "#F97316",
+    gold:    "#D97706",
+    goldLt:  "#FDE047",
+    blue:    "#818CF8",
+    sky:     "#A5B4FC",
+    green:   "#3D9970",
+    greenLt: "#86EFAC",
+    red:     "#F43F5E",
+    purple:  "#7C3AED",
+    amber:   "#F59E0B",
+    bg:      "#FEF6EE",
+    card:    "#FFFFFF",
+    text:    "#1C1917",
+    sub:     "#78716C",
+    ghost:   "#A8A29E",
+    border:  "#F0E8DF",
   };
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#F2F5FD', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif" }}>
-      <div style={{ width: '100%', maxWidth: 440, backgroundColor: 'white', borderRadius: 28, boxShadow: '0 4px 28px rgba(5,7,26,0.08), 0 1px 6px rgba(5,7,26,0.04)', overflow: 'hidden' }}>
+    <div style={{ minHeight: '100vh', backgroundColor: T.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif" }}>
+      <div style={{ width: '100%', maxWidth: 440, backgroundColor: T.card, borderRadius: 28, boxShadow: '0 4px 28px rgba(5,7,26,0.08), 0 1px 6px rgba(5,7,26,0.04)', overflow: 'hidden' }}>
         <div style={{ 
           background: `linear-gradient(145deg, ${T.cDeep} 0%, ${T.cRich} 55%, ${T.cMid} 100%)`, 
           padding: '48px 32px', textAlign: 'center', position: 'relative' 

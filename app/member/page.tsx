@@ -8,32 +8,33 @@ import {
   Eye, EyeOff, Bell, ChevronRight,
   ArrowUpRight, ArrowDownRight,
   Plus, Send, Download, Upload, Shield, Phone, TrendingUp, CheckCircle, LogOut,
-  Loader2
+  Loader2, PieChart as PieChartIcon
 } from 'lucide-react';
+import { BarChart, Bar as RechartsBar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 /* ── Design Tokens ────────────────────────────── */
 const T = {
-  cDeep:   "#05071A",
-  cRich:   "#0C1A68",
-  cMid:    "#1540D4",
-  gold:    "#C8A83E",
-  goldLt:  "#F0D898",
-  blue:    "#2262F0",
-  sky:     "#38BDF8",
-  green:   "#059669",
-  greenLt: "#34D399",
+  cDeep:   "#7C2D12",
+  cRich:   "#B45309",
+  cMid:    "#F97316",
+  gold:    "#D97706",
+  goldLt:  "#FDE047",
+  blue:    "#818CF8",
+  sky:     "#A5B4FC",
+  green:   "#3D9970",
+  greenLt: "#86EFAC",
   red:     "#F43F5E",
   purple:  "#7C3AED",
-  amber:   "#D97706",
-  bg:      "#F2F5FD",
+  amber:   "#F59E0B",
+  bg:      "#FEF6EE",
   card:    "#FFFFFF",
-  text:    "#05071A",
-  med:     "#374151",
-  sub:     "#6B7280",
-  ghost:   "#9CA3AF",
-  border:  "#E4E9F4",
-  navBg:   "#05071A",
-  navAct:  "#2262F0",
+  text:    "#1C1917",
+  med:     "#57534E",
+  sub:     "#78716C",
+  ghost:   "#A8A29E",
+  border:  "#F0E8DF",
+  navBg:   "#7C2D12",
+  navAct:  "#F97316",
 };
 
 const UGX  = (n: number | string) => `UGX ${Number(n).toLocaleString("en-UG")}`;
@@ -133,6 +134,8 @@ export default function MemberDashboard() {
   const [profile, setProfile] = useState<any>(null);
   const [member, setMember] = useState<any>(null);
   const [wallet, setWallet] = useState<any>(null);
+  const [allAccounts, setAllAccounts] = useState<any[]>([]);
+  const [savingProducts, setSavingProducts] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loans, setLoans] = useState<any[]>([]);
 
@@ -151,23 +154,50 @@ export default function MemberDashboard() {
     const { data: profileData } = await supabase.schema('public').from('admin_profiles').select('*').eq('id', session.user.id).single();
     setProfile(profileData);
 
-    const { data: memberData } = await supabase.schema('kuntiy').from('members').select('*').eq('profile_id', session.user.id).single();
+    const { data: memberData } = await supabase.schema('kuntiy').from('members').select('*, organization:organizations(name)').eq('profile_id', session.user.id).single();
     setMember(memberData);
 
     if (memberData) {
-      const { data: accountData } = await supabase.schema('kuntiy').from('accounts').select('*').eq('member_id', memberData.id).single();
-      setWallet(accountData);
+      const { data: accountsData } = await supabase.schema('kuntiy').from('accounts').select('*, saving_product:saving_products(name, interest_rate)').eq('member_id', memberData.id);
+      
+      const mainWallet = accountsData?.find((a: any) => a.account_category === 'asset') || accountsData?.[0];
+      setWallet(mainWallet);
+      setAllAccounts(accountsData || []);
 
-      if (accountData) {
-        const { data: txData } = await supabase.schema('kuntiy').from('journal_lines').select('*, journal_entries(description, created_at)').eq('account_id', accountData.id).order('created_at', { ascending: false }).limit(20);
+      const { data: productsData } = await supabase.schema('kuntiy').from('saving_products').select('*').eq('organization_id', memberData.organization_id);
+      setSavingProducts(productsData || []);
+
+      if (mainWallet) {
+        const { data: txData } = await supabase.schema('kuntiy').from('journal_lines').select('*, journal_entries(description, created_at)').eq('account_id', mainWallet.id).order('created_at', { ascending: false }).limit(20);
         setTransactions(txData || []);
       }
 
       const { data: loanData } = await supabase.schema('kuntiy').from('loans').select('*, loan_installments(paid_principal, paid_interest)').eq('member_id', memberData.id).order('created_at', { ascending: false });
       setLoans(loanData || []);
     }
-
     setLoading(false);
+  };
+
+  const handleOpenAccount = async (productId: string, productName: string) => {
+    setActionLoading(true);
+    try {
+      const { error } = await supabase.schema('kuntiy').from('accounts').insert({
+        organization_id: member.organization_id,
+        member_id: member.id,
+        saving_product_id: productId,
+        name: productName,
+        account_category: 'asset',
+        code: `ACC-${Math.floor(Math.random()*10000)}`,
+        cached_balance: 0.00
+      });
+      if (error) throw error;
+      await fetchData();
+      alert(`Account opened: ${productName}`);
+    } catch (e: any) {
+      alert("Error: " + e.message);
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -302,8 +332,8 @@ export default function MemberDashboard() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[#F2F5FD]">
-        <Loader2 className="w-8 h-8 animate-spin text-[#1540D4]" />
+      <div className="h-screen flex items-center justify-center" style={{ backgroundColor: T.bg }}>
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: T.cMid }} />
       </div>
     );
   }
@@ -318,12 +348,19 @@ export default function MemberDashboard() {
     branch: 'Main Branch'
   };
 
+  const totalWallet = allAccounts.reduce((sum, acc) => sum + parseFloat(acc.cached_balance || '0'), 0);
+
   const balances = {
-    wallet: parseFloat(wallet?.cached_balance || '0'),
+    wallet: totalWallet,
     savings: 0,
     shares: 0,
     loan: loanTotal - loanPaid
   };
+
+  const analyticsData = [
+    { name: 'Assets', value: totalWallet, color: T.greenLt },
+    { name: 'Loans', value: balances.loan, color: T.red },
+  ];
 
   const parsedTxns = transactions.map(tx => {
     const isDeposit = tx.line_type === 'deposit' || tx.line_type === 'loan_disbursement';
@@ -396,7 +433,7 @@ export default function MemberDashboard() {
                 <Chip />
                 <div style={{ textAlign:"right" }}>
                   <div style={{ fontSize:12, color:T.gold, fontWeight:700, letterSpacing:"0.14em", textTransform:"uppercase" }}>
-                    SaccoConnect
+                    {member?.organization?.name || 'SaccoConnect'}
                   </div>
                   <div style={{ fontSize:9, color:"rgba(255,255,255,0.35)", letterSpacing:"0.12em", textTransform:"uppercase", marginTop:2 }}>
                     Premium
@@ -472,6 +509,41 @@ export default function MemberDashboard() {
                 ))}
               </div>
             </div>
+
+            {/* Financial Analytics */}
+            <Card style={{ marginBottom:28 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                <div style={{ fontSize:16, fontWeight:700, color:T.text }}>Financial Summary</div>
+                <PieChartIcon size={20} color={T.blue} />
+              </div>
+              <div style={{ height: 180, width: '100%' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={analyticsData}>
+                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.sub }} axisLine={false} tickLine={false} />
+                    <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} contentStyle={{ borderRadius: 12, border: `1px solid ${T.border}`, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
+                    <RechartsBar dataKey="value" radius={[6, 6, 0, 0]}>
+                      {analyticsData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </RechartsBar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+                <div style={{ flex: 1, padding: 12, background: '#F8FAFC', borderRadius: 12 }}>
+                  <div style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Net Position</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: balances.wallet - balances.loan >= 0 ? T.green : T.red }}>
+                    {UGXM(balances.wallet - balances.loan)}
+                  </div>
+                </div>
+                <div style={{ flex: 1, padding: 12, background: '#F8FAFC', borderRadius: 12 }}>
+                  <div style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Accounts</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: T.text }}>
+                    {allAccounts.length} Active
+                  </div>
+                </div>
+              </div>
+            </Card>
 
             {/* Recent Activity */}
             <Card style={{ marginBottom:24 }}>
@@ -686,6 +758,46 @@ export default function MemberDashboard() {
                     <span style={{ fontSize:14, fontWeight:600, color:T.text, textTransform: 'capitalize' }}>{row.val}</span>
                   </div>
                 ))}
+              </Card>
+
+              <Card style={{ marginBottom:14 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:14 }}>My Saving Accounts</div>
+                {allAccounts.length > 0 ? allAccounts.map((acc: any, i: number, arr: any[]) => (
+                  <div key={acc.id} style={{
+                    display:"flex", justifyContent:"space-between", alignItems:"center",
+                    padding:"12px 0", borderBottom:i<arr.length-1?`1px solid ${T.border}`:"none"
+                  }}>
+                    <div>
+                      <div style={{ fontSize:14, fontWeight:600, color:T.text }}>{acc.name}</div>
+                      <div style={{ fontSize:12, color:T.sub }}>{acc.code}</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize:14, fontWeight:700, color:T.green }}>{UGXM(acc.cached_balance || 0)}</div>
+                      <div style={{ fontSize:11, color:T.sub }}>{acc.saving_product?.interest_rate}% APY</div>
+                    </div>
+                  </div>
+                )) : <div style={{ fontSize: 13, color: T.sub }}>No accounts found.</div>}
+              </Card>
+
+              <Card style={{ marginBottom:14 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:14 }}>Available Saving Plans</div>
+                {savingProducts.length > 0 ? savingProducts.map((p: any, i: number, arr: any[]) => (
+                  <div key={p.id} style={{
+                    display:"flex", justifyContent:"space-between", alignItems:"center",
+                    padding:"12px 0", borderBottom:i<arr.length-1?`1px solid ${T.border}`:"none"
+                  }}>
+                    <div>
+                      <div style={{ fontSize:14, fontWeight:600, color:T.text }}>{p.name}</div>
+                      <div style={{ fontSize:12, color:T.sub }}>{p.interest_rate}% APY</div>
+                    </div>
+                    <button onClick={() => handleOpenAccount(p.id, p.name)} style={{
+                      padding: "6px 12px", background: T.red, color: "white", borderRadius: 8,
+                      fontSize: 12, fontWeight: 700, cursor: "pointer", border: "none"
+                    }}>
+                      Open
+                    </button>
+                  </div>
+                )) : <div style={{ fontSize: 13, color: T.sub }}>No available plans.</div>}
               </Card>
 
               <Card style={{ marginBottom:24 }}>

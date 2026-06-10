@@ -48,31 +48,31 @@ export default function LandingPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
-        <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+      <div className="min-h-screen flex items-center justify-center bg-[#FEF6EE]">
+        <Loader2 className="w-8 h-8 animate-spin text-[#F97316]" />
       </div>
     );
   }
 
   const T = {
-    cDeep:   "#05071A",
-    cRich:   "#0C1A68",
-    cMid:    "#1540D4",
-    gold:    "#C8A83E",
-    goldLt:  "#F0D898",
-    blue:    "#2262F0",
-    sky:     "#38BDF8",
-    green:   "#059669",
-    greenLt: "#34D399",
+    cDeep:   "#7C2D12",
+    cRich:   "#B45309",
+    cMid:    "#F97316",
+    gold:    "#D97706",
+    goldLt:  "#FDE047",
+    blue:    "#818CF8",
+    sky:     "#A5B4FC",
+    green:   "#3D9970",
+    greenLt: "#86EFAC",
     red:     "#F43F5E",
     purple:  "#7C3AED",
-    amber:   "#D97706",
-    bg:      "#F2F5FD",
+    amber:   "#F59E0B",
+    bg:      "#FEF6EE",
     card:    "#FFFFFF",
-    text:    "#05071A",
-    sub:     "#6B7280",
-    ghost:   "#9CA3AF",
-    border:  "#E4E9F4",
+    text:    "#1C1917",
+    sub:     "#78716C",
+    ghost:   "#A8A29E",
+    border:  "#F0E8DF",
   };
 
   return (
