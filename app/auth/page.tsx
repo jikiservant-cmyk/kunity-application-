@@ -187,27 +187,27 @@ function AuthContent() {
                 .maybeSingle();
 
               if (!existingMs) {
-                // 2. Insert new account
+                // 2. Insert new account (inactive initially)
                 const { data: newAccount, error: accountError } = await supabase.schema('kuntiy').from('accounts').insert({
                   organization_id: orgId,
                   member_id: member.id,
                   name: productName,
                   account_category: 'asset',
                   code: `WAL-${Math.floor(Math.random()*10000)}`,
-                  is_active: true,
+                  is_active: false,
                   cached_balance: 0.00
                 }).select('id').single();
                 
                 if (accountError) {
                   console.error("Account creation error:", accountError);
                 } else if (newAccount) {
-                  // 3. Create member_savings connection
+                  // 3. Create member_savings connection (inactive initially)
                   const { error: msError } = await supabase.schema('kuntiy').from('member_savings').insert({
                     organization_id: orgId,
                     member_id: member.id,
                     savings_product_id: selectedProductId,
                     account_id: newAccount.id,
-                    status: 'active'
+                    status: 'inactive'
                   });
                   if (msError) console.error("Member savings creation error:", msError);
                 }

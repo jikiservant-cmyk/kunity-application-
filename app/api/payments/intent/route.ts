@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     const intent = await paymentGateway.createPaymentIntent(amount, currency, {
       source: 'web_app',
       phoneNumber,
-      reference: `CARD-${Date.now()}`
+      reference: `PAY-ACT-${Date.now()}`
     });
 
     // Make an admin auth client to bypass RLS to insert quickly

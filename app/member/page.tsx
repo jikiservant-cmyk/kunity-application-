@@ -171,6 +171,38 @@ export default function MemberDashboard() {
         status: ms.status
       })) || [];
       
+      // Check #1: Is there any account with is_active = true?
+      let isActivated = accountsData.some((a: any) => a.is_active === true);
+      
+      // Check #2: Failsafe - check if there's a successful PAY-ACT- payment
+      if (!isActivated) {
+        const { data: paymentData } = await supabase.schema('kuntiy')
+          .from('payment_requests')
+          .select('*')
+          .eq('member_id', memberData.id)
+          .eq('organization_id', memberData.organization_id)
+          .like('transaction_reference', 'PAY-ACT-%')
+          .eq('status', 'success')
+          .limit(1);
+          
+        isActivated = paymentData && paymentData.length > 0;
+        
+        // If failsafe check passes, automatically activate the accounts
+        if (isActivated) {
+          await supabase.schema('kuntiy')
+            .from('member_savings')
+            .update({ status: 'active' })
+            .eq('member_id', memberData.id)
+            .eq('organization_id', memberData.organization_id);
+            
+          await supabase.schema('kuntiy')
+            .from('accounts')
+            .update({ is_active: true })
+            .eq('member_id', memberData.id)
+            .eq('organization_id', memberData.organization_id);
+        }
+      }
+      
       // Filter only active accounts for normal operation
       const activeAccounts = accountsData.filter((a: any) => a.is_active === true && a.status === 'active');
       const inactiveAccounts = accountsData.filter((a: any) => a.is_active === false || a.status !== 'active');

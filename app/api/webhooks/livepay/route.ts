@@ -31,21 +31,42 @@ export async function POST(req: Request) {
     // (Optional) Implement webhook signature validation here.
     // e.g. using crypto to verify headers['x-livepay-signature'] against LIVEPAY_SECRET_KEY
 
-    // Simply update the payment_request table status so the database trigger fires
+    const isSuccess = status === 'success' || status === 'successful';
     const supabaseAdmin = getSupabaseAdmin();
-    const { data, error } = await supabaseAdmin.schema('kuntiy')
+    
+    // Update payment request
+    const { data: paymentData, error: paymentError } = await supabaseAdmin.schema('kuntiy')
       .from('payment_requests')
-      .update({ status: status === 'success' || status === 'successful' ? 'success' : 'failed' })
+      .update({ status: isSuccess ? 'success' : 'failed' })
       .eq('transaction_reference', internal_reference)
-      .select('id');
+      .select('member_id, organization_id');
 
-    if (error) {
-      console.error('Error processing livepay webhook:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (paymentError) {
+      console.error('Error processing livepay webhook:', paymentError);
+      return NextResponse.json({ error: paymentError.message }, { status: 500 });
+    }
+
+    // If payment is successful, activate the user's accounts
+    if (isSuccess && paymentData && paymentData.length > 0) {
+      const { member_id, organization_id } = paymentData[0];
+
+      // First activate the member_savings record
+      await supabaseAdmin.schema('kuntiy')
+        .from('member_savings')
+        .update({ status: 'active' })
+        .eq('member_id', member_id)
+        .eq('organization_id', organization_id);
+
+      // Then activate the corresponding accounts
+      await supabaseAdmin.schema('kuntiy')
+        .from('accounts')
+        .update({ is_active: true })
+        .eq('member_id', member_id)
+        .eq('organization_id', organization_id);
     }
 
     // Returns a 200 OK so LivePay knows we received it
-    return NextResponse.json({ success: true, data });
+    return NextResponse.json({ success: true, data: paymentData });
   } catch (error: any) {
     console.error('Webhook error:', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
