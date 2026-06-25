@@ -152,54 +152,67 @@ export default function MemberDashboard() {
       return;
     }
 
-    const { data: profileData } = await supabase.schema('kuntiy').from('profiles').select('*').eq('id', session.user.id).single();
-    setProfile(profileData);
+    // Skip profiles table for now, just use member data
+    setProfile(null);
 
-    const { data: memberData } = await supabase.schema('kuntiy').from('members').select('*, organization:organizations(name)').eq('id', session.user.id).single();
+    const { data: memberData } = await supabase.schema('kunity').from('members').select('*, organization:organizations(name)').eq('id', session.user.id).single();
     setMember(memberData);
 
     if (memberData) {
-      const { data: msData } = await supabase.schema('kuntiy')
+      const { data: msData } = await supabase.schema('kunity')
         .from('member_savings')
-        .select('*, account:accounts(*), savings_product:savings_products(name, interest_rate)')
+        .select('*, account:accounts(*), savings_product:saving_products(name, interest_rate)')
         .eq('member_id', memberData.id);
         
-      const accountsData = msData?.map((ms: any) => ({
+      let accountsData = msData?.map((ms: any) => ({
         ...ms.account,
         savings_product: ms.savings_product,
         savings_product_id: ms.savings_product_id,
         status: ms.status
       })) || [];
       
-      // Check #1: Is there any account with is_active = true?
-      let isActivated = accountsData.some((a: any) => a.is_active === true);
+      // Check #1: Check if there are any active accounts AND active member_savings
+      let isActivated = accountsData.some((a: any) => a.is_active === true && a.status === 'active');
       
-      // Check #2: Failsafe - check if there's a successful PAY-ACT- payment
+      // Check #2: Failsafe - check if there's a successful account_activation payment
       if (!isActivated) {
-        const { data: paymentData } = await supabase.schema('kuntiy')
+        const { data: paymentData } = await supabase.schema('kunity')
           .from('payment_requests')
           .select('*')
           .eq('member_id', memberData.id)
           .eq('organization_id', memberData.organization_id)
-          .like('transaction_reference', 'PAY-ACT-%')
           .eq('status', 'success')
+          .or('payment_type.eq.account_activation,transaction_reference.like.PAY-ACT-%')
           .limit(1);
           
-        isActivated = paymentData && paymentData.length > 0;
+        isActivated = paymentData !== null && paymentData.length > 0;
         
-        // If failsafe check passes, automatically activate the accounts
+        // If failsafe check passes, automatically activate the accounts and reload data
         if (isActivated) {
-          await supabase.schema('kuntiy')
+          await supabase.schema('kunity')
             .from('member_savings')
             .update({ status: 'active' })
             .eq('member_id', memberData.id)
             .eq('organization_id', memberData.organization_id);
             
-          await supabase.schema('kuntiy')
+          await supabase.schema('kunity')
             .from('accounts')
             .update({ is_active: true })
             .eq('member_id', memberData.id)
             .eq('organization_id', memberData.organization_id);
+            
+          // Reload accounts data after activation!
+          const { data: msDataReloaded } = await supabase.schema('kunity')
+            .from('member_savings')
+            .select('*, account:accounts(*), savings_product:saving_products(name, interest_rate)')
+            .eq('member_id', memberData.id);
+          
+          accountsData = msDataReloaded?.map((ms: any) => ({
+            ...ms.account,
+            savings_product: ms.savings_product,
+            savings_product_id: ms.savings_product_id,
+            status: ms.status
+          })) || [];
         }
       }
       
@@ -211,16 +224,37 @@ export default function MemberDashboard() {
       setWallet(mainWallet);
       setAllAccounts(activeAccounts || []);
 
-      const { data: productsData } = await supabase.schema('kuntiy').from('savings_products').select('*').eq('organization_id', memberData.organization_id);
+      console.log('🔍 Loading saving products for org:', memberData.organization_id);
+      let { data: productsData } = await supabase.schema('kunity').from('saving_products').select('*').eq('organization_id', memberData.organization_id);
+      console.log('✅ Products loaded:', productsData);
+
+      if (!productsData || productsData.length === 0) {
+        console.log('🆕 No saving products found — creating a default one');
+        const { data: newProduct, error } = await supabase.schema('kunity').from('saving_products').insert({
+          organization_id: memberData.organization_id,
+          name: 'Standard Savings',
+          code: 'STD',
+          interest_rate: 5.0,
+          minimum_balance: 0,
+          allow_deposits: true,
+          allow_withdrawals: true
+        }).select('*').single();
+        
+        console.log('✅ Default product created:', newProduct, 'Error:', error);
+        if (newProduct) {
+          productsData = [newProduct];
+        }
+      }
+      
       setSavingProducts(productsData || []);
 
       const accountIds = accountsData.map((a: any) => a.id);
       if (accountIds.length > 0) {
-        const { data: txData } = await supabase.schema('kuntiy').from('journal_lines').select('*, journal_entries(description, created_at)').in('account_id', accountIds).order('created_at', { ascending: false }).limit(30);
+        const { data: txData } = await supabase.schema('kunity').from('journal_lines').select('*, journal_entries(description, created_at)').in('account_id', accountIds).order('created_at', { ascending: false }).limit(30);
         setTransactions(txData || []);
       }
 
-      const { data: loanData } = await supabase.schema('kuntiy').from('loans').select('*, loan_installments(paid_principal, paid_interest)').eq('member_id', memberData.id).order('created_at', { ascending: false });
+      const { data: loanData } = await supabase.schema('kunity').from('loans').select('*, loan_installments(paid_principal, paid_interest)').eq('member_id', memberData.id).order('created_at', { ascending: false });
       setLoans(loanData || []);
     }
     setLoading(false);
@@ -236,7 +270,7 @@ export default function MemberDashboard() {
     setActionLoading(true);
     try {
       // 1. Try to find existing active member_savings linked to an active account
-      const { data: existingMs } = await supabase.schema('kuntiy')
+      const { data: existingMs } = await supabase.schema('kunity')
         .from('member_savings')
         .select('id, account_id, accounts!inner(is_active, deleted_at)')
         .eq('organization_id', member.organization_id)
@@ -244,19 +278,16 @@ export default function MemberDashboard() {
         .eq('savings_product_id', productId)
         .eq('status', 'active')
         .is('deleted_at', null)
-        .eq('accounts.is_active', true)
-        .is('accounts.deleted_at', null)
         .limit(1)
         .maybeSingle();
 
       if (!existingMs) {
         // 2. Insert new account
-        const { data: newAccount, error: accountError } = await supabase.schema('kuntiy').from('accounts').insert({
+        const { data: newAccount, error: accountError } = await supabase.schema('kunity').from('accounts').insert({
           organization_id: member.organization_id,
           member_id: member.id,
           name: productName,
           account_category: 'asset',
-          // eslint-disable-next-line react-hooks/purity
           code: `ACC-${Math.floor(Math.random()*10000)}`,
           is_active: true,
           cached_balance: 0.00
@@ -266,7 +297,7 @@ export default function MemberDashboard() {
         
         if (newAccount) {
           // 3. Create member_savings connection
-          const { error: msError } = await supabase.schema('kuntiy').from('member_savings').insert({
+          const { error: msError } = await supabase.schema('kunity').from('member_savings').insert({
             organization_id: member.organization_id,
             member_id: member.id,
             savings_product_id: productId,
@@ -287,7 +318,6 @@ export default function MemberDashboard() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
@@ -311,23 +341,30 @@ export default function MemberDashboard() {
     setActionLoading(true);
 
     if (activeModal === 'deposit') {
-      const newBalance = parseFloat(wallet.cached_balance || "0") + amount;
-      await supabase.schema('kuntiy').from('accounts').update({ cached_balance: newBalance }).eq('id', wallet.id);
-      
-      const { data: entry } = await supabase.schema('kuntiy').from('journal_entries').insert({
-        organization_id: member.organization_id,
-        description: 'Wallet Deposit',
-        created_by: profile.id
-      }).select('id').single();
-
-      if (entry) {
-        await supabase.schema('kuntiy').from('journal_lines').insert({
-          journal_entry_id: entry.id,
-          account_id: wallet.id,
-          member_id: member.id,
-          line_type: 'deposit',
-          debit: amount
+      try {
+        const res = await fetch('/api/payments/intent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount,
+            currency: 'UGX',
+            memberId: member.id,
+            organizationId: member.organization_id,
+            phoneNumber: phoneInput || member?.phone || profile?.phone,
+            paymentTypeCode: 'deposit'
+          })
         });
+        const json = await res.json();
+        if (json.success) {
+          alert("Payment intent created successfully! Status: Pending.\nYour wallet will be credited automatically when the mobile money payment completes.");
+          setActiveModal(null);
+          setAmountInput('');
+          setPhoneInput('');
+        } else {
+          throw new Error(json.error);
+        }
+      } catch (e: any) {
+        alert("Error: " + e.message);
       }
     } else if (activeModal === 'withdraw') {
       if (amount > parseFloat(wallet.cached_balance || "0")) {
@@ -337,16 +374,16 @@ export default function MemberDashboard() {
       }
       
       const newBalance = parseFloat(wallet.cached_balance || "0") - amount;
-      await supabase.schema('kuntiy').from('accounts').update({ cached_balance: newBalance }).eq('id', wallet.id);
+      await supabase.schema('kunity').from('accounts').update({ cached_balance: newBalance }).eq('id', wallet.id);
       
-      const { data: entry } = await supabase.schema('kuntiy').from('journal_entries').insert({
+      const { data: entry } = await supabase.schema('kunity').from('journal_entries').insert({
         organization_id: member.organization_id,
         description: 'Wallet Withdrawal',
         created_by: profile.id
       }).select('id').single();
 
       if (entry) {
-        await supabase.schema('kuntiy').from('journal_lines').insert({
+        await supabase.schema('kunity').from('journal_lines').insert({
           journal_entry_id: entry.id,
           account_id: wallet.id,
           member_id: member.id,
@@ -355,7 +392,7 @@ export default function MemberDashboard() {
         });
       }
     } else if (activeModal === 'loan') {
-      await supabase.schema('kuntiy').from('loans').insert({
+      await supabase.schema('kunity').from('loans').insert({
         organization_id: member.organization_id,
         member_id: member.id,
         principal: amount,
@@ -376,16 +413,16 @@ export default function MemberDashboard() {
       }
       
       const newBalance = parseFloat(wallet.cached_balance || "0") - amount;
-      await supabase.schema('kuntiy').from('accounts').update({ cached_balance: newBalance }).eq('id', wallet.id);
+      await supabase.schema('kunity').from('accounts').update({ cached_balance: newBalance }).eq('id', wallet.id);
       
-      const { data: entry } = await supabase.schema('kuntiy').from('journal_entries').insert({
+      const { data: entry } = await supabase.schema('kunity').from('journal_entries').insert({
         organization_id: member.organization_id,
         description: 'Loan Repayment',
         created_by: profile.id
       }).select('id').single();
 
       if (entry) {
-        await supabase.schema('kuntiy').from('journal_lines').insert({
+        await supabase.schema('kunity').from('journal_lines').insert({
           journal_entry_id: entry.id,
           account_id: wallet.id,
           member_id: member.id,
@@ -394,7 +431,7 @@ export default function MemberDashboard() {
           loan_id: activeLoan.id
         });
         
-        await supabase.schema('kuntiy').from('loan_repayments').insert({
+        await supabase.schema('kunity').from('loan_repayments').insert({
           organization_id: member.organization_id,
           loan_id: activeLoan.id,
           journal_entry_id: entry.id,
@@ -405,7 +442,7 @@ export default function MemberDashboard() {
         
         const newPaidAmount = loanPaid + amount;
         if (newPaidAmount >= loanTotal) {
-          await supabase.schema('kuntiy').from('loans').update({ status: 'completed' }).eq('id', activeLoan.id);
+          await supabase.schema('kunity').from('loans').update({ status: 'completed' }).eq('id', activeLoan.id);
         }
       }
     }
@@ -441,42 +478,129 @@ export default function MemberDashboard() {
             To activate your Sacco Connect account and unlock all features, please purchase a virtual account card for <strong>UGX 5,000</strong>.
           </p>
           
-          <button onClick={async () => {
-            setActionLoading(true);
-            try {
-              const res = await fetch('/api/payments/intent', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  amount: 5000,
-                  currency: 'UGX',
-                  memberId: member.id,
-                  organizationId: member.organization_id,
-                  phoneNumber: member?.phone || profile?.phone
-                })
-              });
-              const json = await res.json();
-              if (json.success) {
-                alert("Payment intent created successfully! (In production this would redirect to LivePay). Status: Pending.");
-                // We'll mimic the webhook success here for demo purposes if needed, otherwise wait.
-                // Since there's no actual LivePay webhook we can trigger from here easily without sharing keys,
-                // we'll instruct the user to check their phone.
-              } else {
-                throw new Error(json.error);
+          <div style={{ width: '100%', maxWidth: 400, background: '#FFF8F0', padding: 24, borderRadius: 24, border: '1px solid #EAE0CC', textAlign: 'left', marginBottom: 24, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 11, fontWeight: 800, color: '#A5927D', letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}>
+                Payment Amount (Min 5,000 UGX)
+              </label>
+              <div style={{
+                display: 'flex', alignItems: 'center', background: '#FCFAEE', borderRadius: 14,
+                padding: '0 16px', height: 54, border: '1px solid #EAE0CC'
+              }}>
+                <span style={{ fontWeight: 700, color: '#3A271C', marginRight: 8 }}>UGX</span>
+                <input
+                  type="number"
+                  value={amountInput || '5000'}
+                  onChange={(e) => setAmountInput(e.target.value)}
+                  placeholder="5000"
+                  style={{
+                    border: 'none', background: 'transparent', outline: 'none', 
+                    flex: 1, fontSize: 16, fontWeight: 700, color: '#3A271C'
+                  }}
+                />
+              </div>
+            </div>
+            
+            <div style={{ marginBottom: 24 }}>
+              <label style={{ fontSize: 11, fontWeight: 800, color: '#A5927D', letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}>
+                Mobile Money Number
+              </label>
+              <div style={{
+                display: 'flex', alignItems: 'center', background: '#FCFAEE', borderRadius: 14,
+                padding: '0 16px', height: 54, border: '1px solid #EAE0CC'
+              }}>
+                <Phone size={18} color="#A5927D" />
+                <input
+                  type="tel"
+                  required
+                  value={phoneInput || member?.phone || profile?.phone || ''}
+                  onChange={(e) => setPhoneInput(e.target.value)}
+                  placeholder="07..."
+                  style={{
+                    border: 'none', background: 'transparent', outline: 'none', 
+                    flex: 1, fontSize: 16, fontWeight: 700, color: '#3A271C', marginLeft: 12
+                  }}
+                />
+              </div>
+            </div>
+
+            <button onClick={async () => {
+              setActionLoading(true);
+              try {
+                const finalPhone = phoneInput || member?.phone || profile?.phone;
+                const finalAmount = parseFloat(amountInput) || 5000;
+                
+                if (finalAmount < 5000) {
+                  alert("Minimum activation fee is UGX 5,000");
+                  setActionLoading(false);
+                  return;
+                }
+                if (!finalPhone) {
+                  alert("Please provide a valid phone number");
+                  setActionLoading(false);
+                  return;
+                }
+
+                const res = await fetch('/api/payments/intent', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    amount: finalAmount,
+                    currency: 'UGX',
+                    memberId: member.id,
+                    organizationId: member.organization_id,
+                    phoneNumber: finalPhone,
+                    paymentTypeCode: 'account_activation'
+                  })
+                });
+                const json = await res.json();
+                if (json.success) {
+                  const intentId = json.intent.id;
+                  alert("Payment intent created successfully! (In production this would trigger a mobile money popup via NaJiki). Status: Pending.\nYour account will be activated automatically when the payment completes.");
+                  setPhoneInput('');
+                  setAmountInput('');
+                  
+                  // Polling NaJiki API mechanism
+                  let attempts = 0;
+                  const interval = setInterval(async () => {
+                    attempts++;
+                    try {
+                      // Poll NaJiki API
+                      const response = await fetch(`https://najiki.netlify.app/api/payments/${intentId}`);
+                      if (response.ok) {
+                        const payment = await response.json();
+                        if (payment.status === 'success' || payment.status === 'successful') {
+                          clearInterval(interval);
+                          
+                          // Wait briefly for webhook to process the DB updates
+                          setTimeout(() => {
+                            alert("Payment successful! Your account is now activated!");
+                            fetchData(); // Reload the UI
+                          }, 1500);
+                        }
+                      }
+                    } catch (e) {}
+                    if (attempts > 30) clearInterval(interval); // 1 minute max polling
+                  }, 2000); // Check every 2 seconds
+                  
+                } else {
+                  throw new Error(json.error);
+                }
+              } catch (e: any) {
+                alert("Error: " + e.message);
+              } finally {
+                setActionLoading(false);
               }
-            } catch (e: any) {
-              alert("Error: " + e.message);
-            } finally {
-              setActionLoading(false);
-            }
-          }} disabled={actionLoading} style={{
-            width: "100%", padding: "18px", borderRadius: 18, border: "none", cursor: actionLoading ? "not-allowed" : "pointer",
-            background: `linear-gradient(135deg, ${T.cDeep} 0%, ${T.blue} 100%)`,
-            color: "white", fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-            boxShadow: `0 10px 28px ${T.blue}50`, letterSpacing: "-0.01em"
-          }}>
-            {actionLoading ? <Loader2 size={20} className="animate-spin" /> : <><Shield size={20} /> Purchase Card (UGX 5,000)</>}
-          </button>
+            }} disabled={actionLoading} style={{
+              width: "100%", padding: "18px", borderRadius: 18, border: "none", cursor: actionLoading ? "not-allowed" : "pointer",
+              background: `linear-gradient(135deg, #022C22 0%, ${T.green} 100%)`,
+              color: "white", fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              boxShadow: `0 10px 28px ${T.green}50`, letterSpacing: "-0.01em"
+            }}>
+              {actionLoading ? <Loader2 size={20} className="animate-spin" /> : <><Shield size={20} /> Purchase Card Now</>}
+            </button>
+          </div>
+
           
           <button onClick={handleSignOut} style={{ marginTop: 24, fontSize: 14, color: T.sub, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
             Sign Out
@@ -1051,7 +1175,7 @@ export default function MemberDashboard() {
                   {activeModal === 'deposit' ? 'Wallet Top Up' : 'Wallet Withdraw'}
                 </h3>
                 <p style={{ fontSize: 13, color: '#887563', margin: 0 }}>
-                  {activeModal === 'deposit' ? 'Add SMS credits via LivePay Mobile Money' : 'Withdraw funds via Mobile Money'}
+                  {activeModal === 'deposit' ? 'Add funds via Mobile Money' : 'Withdraw funds via Mobile Money'}
                 </p>
               </div>
 

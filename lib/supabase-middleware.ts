@@ -7,9 +7,13 @@ export async function updateSession(request: NextRequest) {
   });
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || 'https://demo-placeholder.supabase.co',
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'placeholder-key',
     {
+      cookieOptions: {
+        sameSite: 'none',
+        secure: true
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll();
@@ -22,7 +26,7 @@ export async function updateSession(request: NextRequest) {
             request,
           });
           cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options)
+            supabaseResponse.cookies.set(name, value, { ...options, sameSite: 'none', secure: true })
           );
         },
       },
@@ -55,10 +59,12 @@ export async function updateSession(request: NextRequest) {
         .from('admin_profiles')
         .select('role')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
 
       const url = request.nextUrl.clone();
-      if (profile?.role === 'sacco_admin' || profile?.role === 'system_admin' || profile?.role === 'super_admin') {
+      const role = profile?.role || 'member';
+      const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin', 'admin'].includes(role);
+      if (isSaccoAdmin) {
         url.pathname = '/admin';
       } else {
         url.pathname = '/member';
@@ -72,22 +78,23 @@ export async function updateSession(request: NextRequest) {
         .from('admin_profiles')
         .select('role')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
       
       const role = profile?.role || 'member';
-      const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin'].includes(role);
+      const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin', 'admin'].includes(role);
+      const isMember = role === 'member' || !isSaccoAdmin;
 
       // Protect /admin routes, must be strictly admin
       if (isAdminPage && !isSaccoAdmin) {
         const url = request.nextUrl.clone();
-        url.pathname = role === 'member' ? '/member' : '/auth';
+        url.pathname = isMember ? '/member' : '/auth';
         return NextResponse.redirect(url);
       }
 
       // Protect /member routes, must be strictly member
-      if (isMemberPage && role !== 'member') {
+      if (isMemberPage && isSaccoAdmin && !isMember) {
         const url = request.nextUrl.clone();
-        url.pathname = isSaccoAdmin ? '/admin' : '/auth';
+        url.pathname = '/admin';
         return NextResponse.redirect(url);
       }
     }

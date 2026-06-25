@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
-import SetupRequired from '@/components/SetupRequired';
+import { supabase } from '@/lib/supabase';
 import { Loader2 } from 'lucide-react';
 
 export default function LandingPage() {
@@ -11,24 +10,20 @@ export default function LandingPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isSupabaseConfigured()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLoading(false);
-      return;
-    }
-
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         // Fetch role to redirect to correct dashboard
         const { data: profile } = await supabase
-          .schema('kuntiy')
-          .from('profiles')
-          .select('roles')
+          .schema('public')
+          .from('admin_profiles')
+          .select('role')
           .eq('id', session.user.id)
-          .single();
+          .maybeSingle();
           
-        if (profile?.roles?.includes('sacco_admin') || profile?.roles?.includes('super_admin') || profile?.roles?.includes('system_admin')) {
+        const role = profile?.role || 'member';
+        const isAdmin = ['sacco_admin', 'super_admin', 'system_admin', 'admin'].includes(role);
+        if (isAdmin) {
           router.replace('/admin');
         } else {
           router.replace('/member');
@@ -40,10 +35,6 @@ export default function LandingPage() {
 
     checkSession();
   }, [router]);
-
-  if (!isSupabaseConfigured()) {
-    return <SetupRequired />;
-  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#FEF6EE]">

@@ -1,22 +1,25 @@
 import { createBrowserClient } from '@supabase/ssr';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const getEnv = (key: string) => {
+  if (typeof window !== 'undefined' && (window as any).ENV) {
+    return (window as any).ENV[key];
+  }
+  return process.env[key] || process.env[key.replace('NEXT_PUBLIC_', '')];
+};
+
+const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL') || 'https://demo-placeholder.supabase.co';
+const supabaseAnonKey = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') || 'placeholder-key';
 
 export const supabase = createBrowserClient(
-  supabaseUrl || 'https://demo-placeholder.supabase.co',
-  supabaseAnonKey || 'placeholder-key',
+  supabaseUrl,
+  supabaseAnonKey,
   {
     db: {
-      schema: 'kuntiy'
+      schema: 'kunity'
+    },
+    cookieOptions: {
+      sameSite: 'none',
+      secure: true
     }
   }
 );
-
-export const isSupabaseConfigured = () => {
-  return (
-    process.env.NEXT_PUBLIC_SUPABASE_URL && 
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
-    process.env.NEXT_PUBLIC_SUPABASE_URL !== 'YOUR_SUPABASE_URL_HERE'
-  );
-};

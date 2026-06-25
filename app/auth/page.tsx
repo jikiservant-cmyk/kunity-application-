@@ -13,7 +13,6 @@ function AuthContent() {
 
   useEffect(() => {
     if (searchParams.get('mode') === 'register') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMode('register');
     }
   }, [searchParams]);
@@ -28,8 +27,6 @@ function AuthContent() {
   const [address, setAddress] = useState('');
   const [nextOfKinName, setNextOfKinName] = useState('');
   const [nextOfKinPhone, setNextOfKinPhone] = useState('');
-  const [selectedProductId, setSelectedProductId] = useState('');
-  const [savingProducts, setSavingProducts] = useState<any[]>([]);
   const [orgId, setOrgId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -38,14 +35,18 @@ function AuthContent() {
   const [organizations, setOrganizations] = useState<any[]>([]);
 
   const loadOrgs = async () => {
-    let { data: orgs, error } = await supabase.schema('kuntiy').from('organizations').select('id, name');
+    console.log("🚀 loadOrgs starting...");
+    let { data: orgs, error } = await supabase.schema('kunity').from('organizations').select('id, name');
+    console.log("✅ loadOrgs - orgs loaded:", orgs, "error:", error);
     
     if (!orgs || orgs.length === 0) {
-      const { data: newOrg } = await supabase.schema('kuntiy').from('organizations').insert({
+      console.log("🆕 No orgs found - creating default...");
+      const { data: newOrg, error: newOrgError } = await supabase.schema('kunity').from('organizations').insert({
         name: 'Default Sacco',
         code: 'DEF',
         email: 'hello@def.com'
       }).select('id, name').single();
+      console.log("✅ newOrg created:", newOrg, "error:", newOrgError);
       if (newOrg) {
         orgs = [newOrg];
       }
@@ -62,42 +63,12 @@ function AuthContent() {
 
   useEffect(() => {
     if (step === 2) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadOrgs();
     }
   }, [step]);
 
 
-  useEffect(() => {
-    async function loadProducts() {
-      if (!orgId) {
-        setSavingProducts([]);
-        return;
-      }
-      
-      const { data: products } = await supabase.schema('kuntiy').from('savings_products').select('*').eq('organization_id', orgId);
-      
-      if (products && products.length > 0) {
-        setSavingProducts(products);
-        setSelectedProductId(products[0].id);
-      } else {
-        const { data: newProduct } = await supabase.schema('kuntiy').from('savings_products').insert({
-          organization_id: orgId,
-          name: 'Standard Savings',
-          code: 'STD',
-          interest_rate: 5.0,
-          minimum_balance: 0,
-          allow_deposits: true,
-          allow_withdrawals: true
-        }).select('*').single();
-        if (newProduct) {
-          setSavingProducts([newProduct]);
-          setSelectedProductId(newProduct.id);
-        }
-      }
-    }
-    loadProducts();
-  }, [orgId]);
+
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,83 +108,45 @@ function AuthContent() {
           if (data.user) {
             setRegisteredUserId(data.user.id);
             
-            // Insert into public.admin_profiles (this triggers sync_member_to_kuntiy_members)
-            const { error: profileError } = await supabase
-              .schema('public')
-              .from('admin_profiles')
-              .upsert({ 
-                id: data.user.id,
-                full_name: fullName,
-                role: 'member',
-                app_type: 'sacco',
-                tenant_id: orgId
-              }, { onConflict: 'id' });
-              
-            if (profileError) console.error("Profile creation error:", profileError);
+            // Delegate profile and member creation to the backend
+            // to securely bypass client-side RLS limitations (which often block inserts if email confirm is required or policies are strict).
+            const setupResponse = await fetch('/api/auth/profile', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId: data.user.id,
+                fullName,
+                orgId,
+                email,
+                phone,
+                gender,
+                dateOfBirth,
+                nationalId,
+                address,
+                nextOfKinName,
+                nextOfKinPhone
+              })
+            });
 
-            // Update kuntiy.members (initially created by public.admin_profiles trigger)
-            const { data: member, error: memberError } = await supabase.schema('kuntiy').from('members').update({
-              profile_id: data.user.id,
-              first_name: fullName.split(' ')[0] || fullName,
-              last_name: fullName.split(' ').slice(1).join(' ') || '',
-              email: email,
-              phone: phone,
-              gender: gender,
-              date_of_birth: dateOfBirth || null,
-              national_id: nationalId,
-              address: address,
-              next_of_kin_name: nextOfKinName,
-              next_of_kin_phone: nextOfKinPhone
-            }).eq('id', data.user.id).select('id').single();
-
-            if (memberError) console.error("Member creation error:", memberError);
-
-            if (member && selectedProductId) {
-              const selectedProduct = savingProducts.find(p => p.id === selectedProductId);
-              const productName = selectedProduct?.name || 'Main Wallet';
-              
-              // 1. Try to find existing active member_savings linked to an active account
-              const { data: existingMs } = await supabase.schema('kuntiy')
-                .from('member_savings')
-                .select('id, account_id, accounts!inner(is_active, deleted_at)')
-                .eq('organization_id', orgId)
-                .eq('member_id', member.id)
-                .eq('savings_product_id', selectedProductId)
-                .eq('status', 'active')
-                .is('deleted_at', null)
-                .eq('accounts.is_active', true)
-                .is('accounts.deleted_at', null)
-                .limit(1)
-                .maybeSingle();
-
-              if (!existingMs) {
-                // 2. Insert new account (inactive initially)
-                const { data: newAccount, error: accountError } = await supabase.schema('kuntiy').from('accounts').insert({
-                  organization_id: orgId,
-                  member_id: member.id,
-                  name: productName,
-                  account_category: 'asset',
-                  code: `WAL-${Math.floor(Math.random()*10000)}`,
-                  is_active: false,
-                  cached_balance: 0.00
-                }).select('id').single();
-                
-                if (accountError) {
-                  console.error("Account creation error:", accountError);
-                } else if (newAccount) {
-                  // 3. Create member_savings connection (inactive initially)
-                  const { error: msError } = await supabase.schema('kuntiy').from('member_savings').insert({
-                    organization_id: orgId,
-                    member_id: member.id,
-                    savings_product_id: selectedProductId,
-                    account_id: newAccount.id,
-                    status: 'inactive'
-                  });
-                  if (msError) console.error("Member savings creation error:", msError);
-                }
+            if (!setupResponse.ok) {
+              let errMessage = "Failed to finalize account setup";
+              try {
+                const errData = await setupResponse.json();
+                console.error("Profile setup API error:", errData);
+                errMessage = errData?.error || errMessage;
+              } catch (e) {
+                console.error("Profile setup API error (non-JSON response):", await setupResponse.text());
               }
+              throw new Error(errMessage);
             }
-            router.push('/member');
+            
+            // Wait for session to be fully confirmed before redirect
+            await supabase.auth.refreshSession();
+            router.refresh();
+            
+            setTimeout(() => {
+              router.push('/member');
+            }, 500);
           }
         }
       } else {
@@ -225,18 +158,13 @@ function AuthContent() {
         if (signInError) throw signInError;
         
         if (data.user) {
-          const { data: profile } = await supabase
-            .schema('public')
-            .from('admin_profiles')
-            .select('role')
-            .eq('id', data.user.id)
-            .single();
-            
-          if (profile?.role === 'sacco_admin' || profile?.role === 'super_admin' || profile?.role === 'system_admin') {
-            router.push('/admin');
-          } else {
+          // Skip profiles table for now, just assume member role
+          await supabase.auth.refreshSession();
+          router.refresh();
+
+          setTimeout(() => {
             router.push('/member');
-          }
+          }, 500);
         }
       }
     } catch (err: any) {
@@ -426,30 +354,6 @@ function AuthContent() {
                 ) : (
                   <div className="p-4 bg-blue-50 text-blue-600 text-sm rounded-2xl border border-blue-100 font-medium">
                     Loading cooperatives...
-                  </div>
-                )}
-
-                {savingProducts.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-semibold" style={{ color: T.text }}>Select Saving Plan</label>
-                    <div className="relative">
-                      <select
-                        value={selectedProductId}
-                        onChange={(e) => setSelectedProductId(e.target.value)}
-                        required
-                        className="w-full px-4 py-3.5 rounded-2xl outline-none transition-all appearance-none cursor-pointer focus:ring-4"
-                        style={{ backgroundColor: T.card, border: `1px solid ${T.border}`, color: T.text, outline: 'none' }}
-                      >
-                        {savingProducts.map(product => (
-                          <option key={product.id} value={product.id}>
-                            {product.name} ({product.interest_rate}% interest)
-                          </option>
-                        ))}
-                      </select>
-                      <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none" style={{ color: T.sub }}>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                      </div>
-                    </div>
                   </div>
                 )}
               </>

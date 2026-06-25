@@ -1,7 +1,7 @@
 -- supabase/migrations/02_livepay_webhook_rpc.sql
 -- Atomic Double-Entry Ledger Posting for LivePay Webhooks
 
-CREATE OR REPLACE FUNCTION kuntiy.process_livepay_webhook(
+CREATE OR REPLACE FUNCTION kunity.process_livepay_webhook(
   p_internal_reference TEXT,
   p_status TEXT,
   p_amount NUMERIC,
@@ -14,7 +14,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  v_pr kuntiy.payment_requests%ROWTYPE;
+  v_pr kunity.payment_requests%ROWTYPE;
   v_net_amount NUMERIC;
   v_journal_entry_id UUID;
   v_primary_wallet_account_id UUID;
@@ -23,7 +23,7 @@ DECLARE
 BEGIN
   -- 1. Fetch the payment request
   SELECT * INTO v_pr
-  FROM kuntiy.payment_requests
+  FROM kunity.payment_requests
   WHERE internal_reference = p_internal_reference
   FOR UPDATE; -- Lock to prevent concurrent duplicate webhooks
 
@@ -43,9 +43,9 @@ BEGIN
   END IF;
 
   -- Update payload and status
-  UPDATE kuntiy.payment_requests
+  UPDATE kunity.payment_requests
   SET 
-    status = p_status::kuntiy.payment_status,
+    status = p_status::kunity.payment_status,
     payload = p_payload,
     fee = p_fee,
     amount = COALESCE(p_amount, amount), -- use payload amount if provided, else keep existing
@@ -67,7 +67,7 @@ BEGIN
 
   -- 4A. Find the Primary Cash/Wallet Asset Account for this Organization
   SELECT id INTO v_primary_wallet_account_id
-  FROM kuntiy.accounts
+  FROM kunity.accounts
   WHERE organization_id = v_pr.organization_id 
     AND account_category = 'asset'
     AND is_active = true
@@ -80,7 +80,7 @@ BEGIN
 
   -- 4B. Find the Member's Active Savings Account Liability
   SELECT account_id INTO v_member_savings_account_id
-  FROM kuntiy.member_savings
+  FROM kunity.member_savings
   WHERE organization_id = v_pr.organization_id
     AND member_id = v_pr.member_id
     AND status = 'active'
@@ -94,7 +94,7 @@ BEGIN
   -- 4C. Find the Fee Income/Expense Account
   -- Enforcing is_system = true and looking for a specific code pattern to avoid random matches
   SELECT id INTO v_fee_account_id
-  FROM kuntiy.accounts
+  FROM kunity.accounts
   WHERE organization_id = v_pr.organization_id 
     AND account_category IN ('income', 'expense')
     AND is_active = true
@@ -107,7 +107,7 @@ BEGIN
   END IF;
 
   -- 5. Create Journal Entry Header
-  INSERT INTO kuntiy.journal_entries (
+  INSERT INTO kunity.journal_entries (
     organization_id, reference, description, entry_date, source_module
   ) VALUES (
     v_pr.organization_id, 
@@ -118,21 +118,21 @@ BEGIN
   ) RETURNING id INTO v_journal_entry_id;
 
   -- Update payment_request with journal link
-  UPDATE kuntiy.payment_requests
+  UPDATE kunity.payment_requests
   SET journal_entry_id = v_journal_entry_id
   WHERE id = v_pr.id;
 
   -- 6. Insert Journal Lines (3-line entry)
 
   -- Line 1: Debit SACCO Wallet (Asset) -> Gross Amount
-  INSERT INTO kuntiy.journal_lines (
+  INSERT INTO kunity.journal_lines (
     journal_entry_id, account_id, member_id, line_type, debit, credit, description
   ) VALUES (
     v_journal_entry_id, v_primary_wallet_account_id, NULL, 'deposit', v_pr.amount, 0, 'LivePay Gross Deposit'
   );
 
   -- Line 2: Credit Member Savings (Liability) -> Net Amount
-  INSERT INTO kuntiy.journal_lines (
+  INSERT INTO kunity.journal_lines (
     journal_entry_id, account_id, member_id, line_type, debit, credit, description
   ) VALUES (
     v_journal_entry_id, v_member_savings_account_id, v_pr.member_id, 'share_contribution', 0, v_net_amount, 'Member Net Saving'
@@ -143,7 +143,7 @@ BEGIN
   IF v_fee_account_id IS NOT NULL AND v_pr.fee > 0 THEN
     -- Assuming fee is an income for SACCO if deducted from member, or expense if charged to SACCO.
     -- Here we do a credit to balance: debit (gross) = credit (net) + credit (fee)
-    INSERT INTO kuntiy.journal_lines (
+    INSERT INTO kunity.journal_lines (
       journal_entry_id, account_id, member_id, line_type, debit, credit, description
     ) VALUES (
       v_journal_entry_id, v_fee_account_id, NULL, 'fee', 0, v_pr.fee, 'LivePay Processing Fee'
@@ -151,7 +151,7 @@ BEGIN
   END IF;
 
   -- 7. Update Sacco Wallet Balance explicitly
-  UPDATE kuntiy.sacco_wallets
+  UPDATE kunity.sacco_wallets
   SET 
     balance = balance + v_pr.amount,
     last_updated = now()

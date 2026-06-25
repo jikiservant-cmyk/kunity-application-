@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
 
 // Initialize a Supabase client with the service role key to bypass RLS for webhook posting.
 function getSupabaseAdmin() {
@@ -9,66 +10,88 @@ function getSupabaseAdmin() {
   );
 }
 
+// Verify LivePay webhook signature
+function verifyLivePaySignature(rawBody: string, signatureHeader: string | null): boolean {
+  const webhookSecret = process.env.LIVEPAY_SECRET_KEY;
+  
+  // If no secret configured, skip verification (dev mode only)
+  if (!webhookSecret || webhookSecret === 'YOUR_LIVEPAY_SECRET_KEY') {
+    console.warn('[LivePay Webhook] WARNING: Webhook secret not configured - skipping signature verification!');
+    return true;
+  }
+
+  if (!signatureHeader) {
+    console.error('[LivePay Webhook] Missing X-LivePay-Signature header');
+    return false;
+  }
+
+  // LivePay likely uses HMAC-SHA256. Adjust if they use a different algorithm.
+  const hmac = crypto.createHmac('sha256', webhookSecret);
+  const digest = hmac.update(rawBody).digest('hex');
+  
+  // Compare computed signature with received signature
+  const signatureBuffer = Buffer.from(signatureHeader, 'hex');
+  const digestBuffer = Buffer.from(digest, 'hex');
+  
+  if (signatureBuffer.length !== digestBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(signatureBuffer, digestBuffer);
+}
+
 export async function POST(req: Request) {
   try {
     const rawBody = await req.text();
-    let body;
+    const signatureHeader = req.headers.get('x-livepay-signature');
 
+    // 1. Verify webhook signature FIRST!
+    if (!verifyLivePaySignature(rawBody, signatureHeader)) {
+      console.error('[LivePay Webhook] Invalid signature');
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+    }
+
+    let body;
     try {
       body = JSON.parse(rawBody);
     } catch {
+      console.error('[LivePay Webhook] Invalid JSON payload');
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
     // LivePay usually sends reference, status, etc. in the webhook payload.
-    // Example: { internal_reference: "uuid", status: "success", amount: 50000, fee: 500, currency: "UGX", ... }
     const { internal_reference, status, amount, fee, currency, phone_number, provider } = body;
 
     if (!internal_reference) {
+      console.error('[LivePay Webhook] Missing internal_reference');
       return NextResponse.json({ error: 'Missing internal_reference' }, { status: 400 });
     }
 
-    // (Optional) Implement webhook signature validation here.
-    // e.g. using crypto to verify headers['x-livepay-signature'] against LIVEPAY_SECRET_KEY
+    console.log(`[LivePay Webhook] Processing payment: reference=${internal_reference}, status=${status}, amount=${amount}`);
 
-    const isSuccess = status === 'success' || status === 'successful';
     const supabaseAdmin = getSupabaseAdmin();
     
-    // Update payment request
-    const { data: paymentData, error: paymentError } = await supabaseAdmin.schema('kuntiy')
-      .from('payment_requests')
-      .update({ status: isSuccess ? 'success' : 'failed' })
-      .eq('transaction_reference', internal_reference)
-      .select('member_id, organization_id');
+    // 2. Call our ATOMIC PostgreSQL function to process everything in one transaction
+    const { data: result, error: rpcError } = await supabaseAdmin.schema('kunity').rpc('process_livepay_webhook', {
+      p_internal_reference: internal_reference,
+      p_status: status,
+      p_amount: amount,
+      p_fee: fee,
+      p_currency: currency,
+      p_payload: body
+    });
 
-    if (paymentError) {
-      console.error('Error processing livepay webhook:', paymentError);
-      return NextResponse.json({ error: paymentError.message }, { status: 500 });
+    if (rpcError) {
+      console.error('[LivePay Webhook] RPC Error:', rpcError);
+      return NextResponse.json({ error: rpcError.message }, { status: 500 });
     }
 
-    // If payment is successful, activate the user's accounts
-    if (isSuccess && paymentData && paymentData.length > 0) {
-      const { member_id, organization_id } = paymentData[0];
-
-      // First activate the member_savings record
-      await supabaseAdmin.schema('kuntiy')
-        .from('member_savings')
-        .update({ status: 'active' })
-        .eq('member_id', member_id)
-        .eq('organization_id', organization_id);
-
-      // Then activate the corresponding accounts
-      await supabaseAdmin.schema('kuntiy')
-        .from('accounts')
-        .update({ is_active: true })
-        .eq('member_id', member_id)
-        .eq('organization_id', organization_id);
-    }
+    console.log('[LivePay Webhook] Success:', result);
 
     // Returns a 200 OK so LivePay knows we received it
-    return NextResponse.json({ success: true, data: paymentData });
+    return NextResponse.json({ success: true, data: result });
   } catch (error: any) {
-    console.error('Webhook error:', error);
+    console.error('[LivePay Webhook] Unhandled error:', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

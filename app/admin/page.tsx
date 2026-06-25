@@ -23,16 +23,18 @@ export default function AdminDashboard() {
       return;
     }
 
-    const { data: profileData } = await supabase.schema('kuntiy').from('profiles').select('*').eq('id', session.user.id).single();
+    const { data: profileData } = await supabase.schema('public').from('admin_profiles').select('*').eq('id', session.user.id).maybeSingle();
     
-    if (!profileData?.roles?.includes('sacco_admin') && !profileData?.roles?.includes('super_admin') && !profileData?.roles?.includes('system_admin')) {
+    const role = profileData?.role || 'member';
+    const isAdmin = ['sacco_admin', 'super_admin', 'system_admin', 'admin'].includes(role);
+    if (!isAdmin) {
       router.push('/member');
       return;
     }
     setProfile(profileData);
 
     const { data: membersData } = await supabase
-      .schema('kuntiy')
+      .schema('kunity')
       .from('members')
       .select('*, accounts(cached_balance)');
       
@@ -43,7 +45,7 @@ export default function AdminDashboard() {
     }
 
     const { data: loansData } = await supabase
-      .schema('kuntiy')
+      .schema('kunity')
       .from('loans')
       .select('*, members(first_name, last_name, organization_id)')
       .eq('status', 'pending');
@@ -54,7 +56,6 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
@@ -65,21 +66,21 @@ export default function AdminDashboard() {
   };
 
   const updateLoanStatus = async (loanId: string, status: string, memberId: string, amount: string, organizationId: string) => {
-    await supabase.schema('kuntiy').from('loans').update({ status }).eq('id', loanId);
+    await supabase.schema('kunity').from('loans').update({ status }).eq('id', loanId);
     
     if (status === 'approved') {
-       const { data: account } = await supabase.schema('kuntiy').from('accounts').select('id, cached_balance').eq('member_id', memberId).single();
+       const { data: account } = await supabase.schema('kunity').from('accounts').select('id, cached_balance').eq('member_id', memberId).single();
        if (account) {
          const newBalance = parseFloat(account.cached_balance || "0") + parseFloat(amount);
-         await supabase.schema('kuntiy').from('accounts').update({ cached_balance: newBalance }).eq('id', account.id);
+         await supabase.schema('kunity').from('accounts').update({ cached_balance: newBalance }).eq('id', account.id);
          
-         const { data: entry } = await supabase.schema('kuntiy').from('journal_entries').insert({
+         const { data: entry } = await supabase.schema('kunity').from('journal_entries').insert({
             organization_id: organizationId,
             description: 'Loan Disbursement'
          }).select('id').single();
 
          if (entry) {
-            await supabase.schema('kuntiy').from('journal_lines').insert({
+            await supabase.schema('kunity').from('journal_lines').insert({
                journal_entry_id: entry.id,
                account_id: account.id,
                member_id: memberId,

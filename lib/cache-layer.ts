@@ -10,7 +10,7 @@ export const getCachedOrganizationData = unstable_cache(
   async (organizationId: string) => {
     // Example: Fetch organization products and structure, which doesn't change often
     const { data: products } = await supabase
-      .schema("kuntiy")
+      .schema("kunity")
       .from("saving_products")
       .select("*")
       .eq("organization_id", organizationId);
