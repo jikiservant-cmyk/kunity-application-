@@ -44,11 +44,11 @@ USING (id = auth.uid());
 -- 4. Saving products policies
 -- ==============================================================================
 CREATE POLICY "Anyone can view saving products"
-ON kunity.saving_products FOR SELECT
+ON kunity.savings_products FOR SELECT
 USING (true);
 
 CREATE POLICY "Allow inserting saving products"
-ON kunity.saving_products FOR INSERT
+ON kunity.savings_products FOR INSERT
 WITH CHECK (true);
 
 -- ==============================================================================

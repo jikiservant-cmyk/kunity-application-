@@ -12,7 +12,7 @@ CREATE INDEX IF NOT EXISTS idx_profiles_organization_id ON kunity.profiles (orga
 -- Accounts indexes
 CREATE INDEX IF NOT EXISTS idx_accounts_member_id ON kunity.accounts (member_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_organization_id ON kunity.accounts (organization_id);
-CREATE INDEX IF NOT EXISTS idx_accounts_saving_product_id ON kunity.accounts (saving_product_id);
+CREATE INDEX IF NOT EXISTS idx_member_savings_savings_product_id ON kunity.member_savings (savings_product_id);
 
 -- Journal Entries & Lines indexes
 CREATE INDEX IF NOT EXISTS idx_journal_entries_organization_id ON kunity.journal_entries (organization_id);
@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_loan_installments_due_date ON kunity.loan_install
 -- Enable RLS on all tables
 ALTER TABLE kunity.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kunity.accounts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE kunity.saving_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kunity.savings_products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kunity.journal_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kunity.journal_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kunity.loans ENABLE ROW LEVEL SECURITY;

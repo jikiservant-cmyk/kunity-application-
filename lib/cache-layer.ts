@@ -11,7 +11,7 @@ export const getCachedOrganizationData = unstable_cache(
     // Example: Fetch organization products and structure, which doesn't change often
     const { data: products } = await supabase
       .schema("kunity")
-      .from("saving_products")
+      .from("savings_products")
       .select("*")
       .eq("organization_id", organizationId);
       

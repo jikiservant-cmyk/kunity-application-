@@ -161,7 +161,7 @@ export default function MemberDashboard() {
     if (memberData) {
       const { data: msData } = await supabase.schema('kunity')
         .from('member_savings')
-        .select('*, account:accounts(*), savings_product:saving_products(name, interest_rate)')
+        .select('*, account:accounts(*), savings_product:savings_products(name, interest_rate)')
         .eq('member_id', memberData.id);
         
       let accountsData = msData?.map((ms: any) => ({
@@ -204,7 +204,7 @@ export default function MemberDashboard() {
           // Reload accounts data after activation!
           const { data: msDataReloaded } = await supabase.schema('kunity')
             .from('member_savings')
-            .select('*, account:accounts(*), savings_product:saving_products(name, interest_rate)')
+            .select('*, account:accounts(*), savings_product:savings_products(name, interest_rate)')
             .eq('member_id', memberData.id);
           
           accountsData = msDataReloaded?.map((ms: any) => ({
@@ -225,19 +225,18 @@ export default function MemberDashboard() {
       setAllAccounts(activeAccounts || []);
 
       console.log('🔍 Loading saving products for org:', memberData.organization_id);
-      let { data: productsData } = await supabase.schema('kunity').from('saving_products').select('*').eq('organization_id', memberData.organization_id);
+      let { data: productsData } = await supabase.schema('kunity').from('savings_products').select('*').eq('organization_id', memberData.organization_id);
       console.log('✅ Products loaded:', productsData);
 
       if (!productsData || productsData.length === 0) {
         console.log('🆕 No saving products found — creating a default one');
-        const { data: newProduct, error } = await supabase.schema('kunity').from('saving_products').insert({
+        const { data: newProduct, error } = await supabase.schema('kunity').from('savings_products').insert({
           organization_id: memberData.organization_id,
           name: 'Standard Savings',
-          code: 'STD',
           interest_rate: 5.0,
-          minimum_balance: 0,
-          allow_deposits: true,
-          allow_withdrawals: true
+          min_balance: 0,
+          allows_withdrawals: true,
+          deposit_frequency: 'monthly'
         }).select('*').single();
         
         console.log('✅ Default product created:', newProduct, 'Error:', error);
@@ -261,12 +260,6 @@ export default function MemberDashboard() {
   };
 
   const handleOpenAccount = async (productId: string, productName: string) => {
-    // If the member hasn't purchased the card (no active wallet), block them.
-    if (!wallet || (!wallet.is_active || wallet.status !== 'active')) {
-      alert("Please purchase a Virtual Account Card first to activate your profile.");
-      return;
-    }
-
     setActionLoading(true);
     try {
       // 1. Try to find existing active member_savings linked to an active account
@@ -282,27 +275,30 @@ export default function MemberDashboard() {
         .maybeSingle();
 
       if (!existingMs) {
-        // 2. Insert new account
+        // 2. Insert new account in kunity.accounts
         const { data: newAccount, error: accountError } = await supabase.schema('kunity').from('accounts').insert({
           organization_id: member.organization_id,
           member_id: member.id,
           name: productName,
           account_category: 'asset',
-          code: `ACC-${Math.floor(Math.random()*10000)}`,
+          code: `SAV-${Math.floor(100000 + Math.random() * 900000)}`,
           is_active: true,
-          cached_balance: 0.00
+          cached_balance: 0.00,
+          currency: 'UGX',
+          is_system: false
         }).select('id').single();
         
         if (accountError) throw accountError;
         
         if (newAccount) {
-          // 3. Create member_savings connection
+          // 3. Create member_savings connection linking accounts and savings_products
           const { error: msError } = await supabase.schema('kunity').from('member_savings').insert({
             organization_id: member.organization_id,
             member_id: member.id,
             savings_product_id: productId,
             account_id: newAccount.id,
-            status: 'active'
+            status: 'active',
+            opened_date: new Date().toISOString().split('T')[0]
           });
           if (msError) throw msError;
         }
