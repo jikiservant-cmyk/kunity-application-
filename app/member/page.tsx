@@ -262,14 +262,13 @@ export default function MemberDashboard() {
   const handleOpenAccount = async (productId: string, productName: string) => {
     setActionLoading(true);
     try {
-      // 1. Try to find existing active member_savings linked to an active account
+      // 1. Try to find existing member_savings linked to an account
       const { data: existingMs } = await supabase.schema('kunity')
         .from('member_savings')
         .select('id, account_id, accounts!inner(is_active, deleted_at)')
         .eq('organization_id', member.organization_id)
         .eq('member_id', member.id)
         .eq('savings_product_id', productId)
-        .eq('status', 'active')
         .is('deleted_at', null)
         .limit(1)
         .maybeSingle();
@@ -282,7 +281,7 @@ export default function MemberDashboard() {
           name: productName,
           account_category: 'asset',
           code: `SAV-${Math.floor(100000 + Math.random() * 900000)}`,
-          is_active: true,
+          is_active: false,
           cached_balance: 0.00,
           currency: 'UGX',
           is_system: false
@@ -297,7 +296,7 @@ export default function MemberDashboard() {
             member_id: member.id,
             savings_product_id: productId,
             account_id: newAccount.id,
-            status: 'active',
+            status: 'frozen',
             opened_date: new Date().toISOString().split('T')[0]
           });
           if (msError) throw msError;
@@ -305,7 +304,7 @@ export default function MemberDashboard() {
       }
       
       await fetchData();
-      alert(existingMs ? `You already have an active ${productName} account.` : `Account opened: ${productName}`);
+      alert(existingMs ? `You already have a ${productName} account.` : `Account created: ${productName}. To activate this plan and unlock your dashboard, please purchase a Virtual Account Card.`);
     } catch (e: any) {
       alert("Error: " + e.message);
     } finally {
