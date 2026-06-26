@@ -15,7 +15,39 @@ export class NajikiProvider implements PaymentProvider {
     const idempotencyKey = reference || `naj-${Date.now()}`;
 
     // Tenant code must match what NaJiki expects, not just the local organizationId.
-    const tenantCode = process.env.NAJIKI_TENANT_CODE || "abc-sacco";
+    let tenantCode = process.env.NAJIKI_TENANT_CODE || "abc-sacco";
+
+    if (organizationId) {
+      try {
+        const { createServerClient } = require("@supabase/ssr");
+        const supabaseAdmin = createServerClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+          {
+            cookies: {
+              getAll() { return []; },
+              setAll() {},
+            },
+          }
+        );
+        
+        const { data: tenant, error: tenantError } = await supabaseAdmin
+          .schema('public')
+          .from('tenants')
+          .select('code')
+          .eq('id', organizationId)
+          .single();
+
+        if (tenant && tenant.code) {
+          tenantCode = tenant.code;
+          console.log(`[NaJiki] Found tenant code ${tenantCode} for organization ${organizationId}`);
+        } else if (tenantError) {
+          console.error("[NaJiki] Failed to fetch tenant code:", tenantError);
+        }
+      } catch (err) {
+        console.error("[NaJiki] Error fetching tenant:", err);
+      }
+    }
 
     const payload = {
       applicationCode,
