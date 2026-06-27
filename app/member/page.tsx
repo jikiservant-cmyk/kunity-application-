@@ -328,7 +328,7 @@ export default function MemberDashboard() {
 
   const performAction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!amountInput || !wallet || !member || !profile) return;
+    if (!amountInput || !wallet || !member) return;
     
     const amount = parseFloat(amountInput);
     if (amount <= 0) return;
@@ -345,7 +345,7 @@ export default function MemberDashboard() {
             currency: 'UGX',
             memberId: member.id,
             organizationId: member.organization_id,
-            phoneNumber: phoneInput || member?.phone || profile?.phone,
+            phoneNumber: phoneInput || member?.phone,
             paymentTypeCode: 'deposit'
           })
         });
@@ -374,7 +374,7 @@ export default function MemberDashboard() {
       const { data: entry } = await supabase.schema('kunity').from('journal_entries').insert({
         organization_id: member.organization_id,
         description: 'Wallet Withdrawal',
-        created_by: profile.id
+        created_by: member.id
       }).select('id').single();
 
       if (entry) {
@@ -393,7 +393,7 @@ export default function MemberDashboard() {
         principal: amount,
         interest_rate: 10,
         status: 'pending',
-        created_by: profile.id
+        created_by: member.id
       });
     } else if (activeModal === 'repay' && activeLoan) {
       if (amount > parseFloat(wallet.cached_balance || "0")) {
@@ -413,7 +413,7 @@ export default function MemberDashboard() {
       const { data: entry } = await supabase.schema('kunity').from('journal_entries').insert({
         organization_id: member.organization_id,
         description: 'Loan Repayment',
-        created_by: profile.id
+        created_by: member.id
       }).select('id').single();
 
       if (entry) {
@@ -432,7 +432,7 @@ export default function MemberDashboard() {
           journal_entry_id: entry.id,
           member_id: member.id,
           principal_paid: amount,
-          created_by: profile.id
+          created_by: member.id
         });
         
         const newPaidAmount = loanPaid + amount;
