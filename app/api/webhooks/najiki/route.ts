@@ -61,6 +61,7 @@ export async function POST(req: Request) {
     }
 
     // NaJiki webhook payload
+    const payloadData = body.data || body;
     const { 
       reference, 
       status, 
@@ -69,7 +70,9 @@ export async function POST(req: Request) {
       paymentType, 
       metadata,
       fee = 0 // Default to 0 if fee not provided
-    } = body;
+    } = payloadData;
+
+    const finalPaymentType = paymentType || payloadData.paymentTypeCode || metadata?.paymentTypeCode;
 
     if (!reference && !externalEntityId) {
       console.error('[Najiki Webhook] Missing reference or externalEntityId');
@@ -87,7 +90,7 @@ export async function POST(req: Request) {
       p_amount: amount,
       p_fee: fee,
       p_external_entity_id: externalEntityId,
-      p_payment_type: paymentType,
+      p_payment_type: finalPaymentType,
       p_payload: body
     });
 
