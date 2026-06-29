@@ -77,7 +77,16 @@ function AuthContent() {
 
     try {
       if (mode === 'register') {
+        const phoneRegex = /^0[0-9]{9}$/;
+        const nationalIdRegex = /^(CM|CF|RM|RF)[A-Z0-9]{12}$/i;
+
         if (step === 1) {
+          // Validate phone number to be 10 digits starting with 0
+          if (!phoneRegex.test(phone.trim())) {
+            setError("Phone Number must be exactly 10 digits starting with 0 (e.g., 0772123456) for Ugandan networks.");
+            setLoading(false);
+            return;
+          }
           // Proceed to step 2 to collect more information including Sacco
           setStep(2);
           setLoading(false);
@@ -85,6 +94,26 @@ function AuthContent() {
         } else if (step === 2) {
           if (!orgId) {
             setError("Please select a Cooperative / Sacco to join.");
+            setLoading(false);
+            return;
+          }
+
+          // Validate National ID is mandatory and in Ugandan format (14 characters)
+          if (!nationalId.trim()) {
+            setError("National ID is required.");
+            setLoading(false);
+            return;
+          }
+
+          if (!nationalIdRegex.test(nationalId.trim())) {
+            setError("National ID must be in the Ugandan format (14 characters starting with CM, CF, RM, or RF, e.g., CM850123456XYZ).");
+            setLoading(false);
+            return;
+          }
+
+          // Validate next of kin phone if provided
+          if (nextOfKinPhone && !phoneRegex.test(nextOfKinPhone.trim())) {
+            setError("Next of Kin Phone Number must be exactly 10 digits starting with 0 (e.g., 0772123456).");
             setLoading(false);
             return;
           }
@@ -281,14 +310,15 @@ function AuthContent() {
                 </div>
 
                 <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold" style={{ color: T.text }}>National ID (Optional)</label>
+                  <label className="text-sm font-semibold" style={{ color: T.text }}>National ID (NIN)</label>
                   <input
                     type="text"
+                    required
                     value={nationalId}
                     onChange={(e) => setNationalId(e.target.value)}
                     className="w-full px-4 py-3.5 rounded-2xl outline-none transition-all focus:ring-4"
                     style={{ backgroundColor: T.card, border: `1px solid ${T.border}`, color: T.text, outline: 'none' }}
-                    placeholder="CMXXXXXXXXXXXX"
+                    placeholder="e.g. CM850123456XYZ"
                   />
                 </div>
 

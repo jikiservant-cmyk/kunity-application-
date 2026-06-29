@@ -336,6 +336,18 @@ export default function MemberDashboard() {
     setActionLoading(true);
 
     if (activeModal === 'deposit') {
+      const targetPhone = phoneInput || member?.phone;
+      if (!targetPhone) {
+        alert("Please provide a phone number");
+        setActionLoading(false);
+        return;
+      }
+      const phoneRegex = /^0[0-9]{9}$/;
+      if (!phoneRegex.test(targetPhone.trim())) {
+        alert("Phone number must be exactly 10 digits starting with 0 (e.g. 0772123456) for Ugandan networks.");
+        setActionLoading(false);
+        return;
+      }
       try {
         const res = await fetch('/api/payments/intent', {
           method: 'POST',
@@ -345,7 +357,7 @@ export default function MemberDashboard() {
             currency: 'UGX',
             memberId: member.id,
             organizationId: member.organization_id,
-            phoneNumber: phoneInput || member?.phone,
+            phoneNumber: targetPhone,
             paymentTypeCode: 'deposit'
           })
         });
@@ -532,6 +544,12 @@ export default function MemberDashboard() {
                 }
                 if (!finalPhone) {
                   alert("Please provide a valid phone number");
+                  setActionLoading(false);
+                  return;
+                }
+                const phoneRegex = /^0[0-9]{9}$/;
+                if (!phoneRegex.test(finalPhone.trim())) {
+                  alert("Phone number must be exactly 10 digits starting with 0 (e.g. 0772123456) for Ugandan networks.");
                   setActionLoading(false);
                   return;
                 }
