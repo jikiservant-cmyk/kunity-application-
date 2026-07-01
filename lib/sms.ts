@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { interpolateTemplate } from './sms-templates';
 
 export interface SmsResult {
   success: boolean;
@@ -17,13 +18,15 @@ export async function sendSms({
   recipientPhone,
   message,
   eventType,
-  originUrl
+  originUrl,
+  templateData
 }: {
   tenantId: string;
   recipientPhone: string;
-  message: string;
+  message?: string;
   eventType: string;
   originUrl?: string;
+  templateData?: Record<string, string | number>;
 }): Promise<SmsResult> {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -38,8 +41,46 @@ export async function sendSms({
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
+    let applicationId = null;
+    try {
+      const { data: tenantData } = await supabaseAdmin
+        .schema('public')
+        .from('tenants')
+        .select('application_id')
+        .eq('id', tenantId)
+        .maybeSingle();
+      if (tenantData) {
+        applicationId = tenantData.application_id;
+      }
+    } catch (e) {
+      console.error('[SMS Service] Error fetching application_id for tenant:', e);
+    }
+
+    // Resolve custom template if available
+    let finalMessage = message || '';
+
+    if (eventType && templateData) {
+      const { data: templateRecord, error: tmplErr } = await supabaseAdmin
+        .schema('public')
+        .from('sms_templates')
+        .select('template')
+        .eq('tenant_id', tenantId)
+        .eq('event_type', eventType)
+        .maybeSingle();
+      
+      if (!tmplErr && templateRecord?.template) {
+        finalMessage = interpolateTemplate(templateRecord.template, templateData);
+      } else if (finalMessage) {
+        finalMessage = interpolateTemplate(finalMessage, templateData);
+      }
+    }
+
+    if (!finalMessage.trim()) {
+      return { success: false, error: 'No message content provided or resolved from template.' };
+    }
+
     // 1. Calculate message cost details
-    const textLength = message.trim().length;
+    const textLength = finalMessage.trim().length;
     let segments = 1;
     if (textLength > 160) {
       segments = Math.ceil(textLength / 153);
@@ -78,16 +119,17 @@ export async function sendSms({
 
       // Log a failed event in the SMS logs for Sacco admins to see
       await supabaseAdmin
-        .schema('kunity')
-        .from('sms_logs')
+        .schema('public')
+        .from('sms_messages')
         .insert({
           tenant_id: tenantId,
-          recipient_phone: recipientPhone,
-          message: message,
+          application_id: applicationId,
+          phone_number: recipientPhone,
+          compiled_message: finalMessage,
           cost: 0,
           status: 'failed',
-          event_type: eventType,
-          provider_sms_id: `failed_${Date.now()}`
+          event_code: eventType,
+          provider_message_id: `failed_${Date.now()}`
         });
 
       return { success: false, error: errorMsg };
@@ -112,19 +154,20 @@ export async function sendSms({
 
     // 4. Wallet transaction ledger is now handled automatically by the RPC
 
-    // 5. Write log entry in `sms_logs` table
+    // 5. Write log entry in `sms_messages` table
     const providerSmsId = `sms_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const { error: logErr } = await supabaseAdmin
-      .schema('kunity')
-      .from('sms_logs')
+      .schema('public')
+      .from('sms_messages')
       .insert({
         tenant_id: tenantId,
-        recipient_phone: recipientPhone,
-        message: message,
+        application_id: applicationId,
+        phone_number: recipientPhone,
+        compiled_message: finalMessage,
         cost: totalCost,
         status: 'sent',
-        event_type: eventType,
-        provider_sms_id: providerSmsId
+        event_code: eventType,
+        provider_message_id: providerSmsId
       });
 
     if (logErr) {
@@ -153,7 +196,7 @@ export async function sendSms({
         body: JSON.stringify({
           tenantCode,
           to: recipientPhone,
-          message,
+          message: finalMessage,
           eventType
         })
       });
@@ -185,10 +228,10 @@ export async function sendSms({
 
       // 9. Update the SMS log status to failed
       await supabaseAdmin
-        .schema('kunity')
-        .from('sms_logs')
-        .update({ status: 'failed', failure_reason: err.message || 'Dispatch failed' })
-        .eq('provider_sms_id', providerSmsId);
+        .schema('public')
+        .from('sms_messages')
+        .update({ status: 'failed' })
+        .eq('provider_message_id', providerSmsId);
 
       return { success: false, error: `NaJiki dispatch failed and refunded. Error: ${err.message}` };
     }

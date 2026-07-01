@@ -82,7 +82,9 @@ export async function POST(req: Request) {
 
     // If this is a brand new Sacco member registration, automatically dispatch a welcome message
     if (isNewRegistration && phone) {
-      const welcomeMsg = `Hello ${fullName.split(' ')[0] || 'Member'}, welcome to our SACCO! Your membership has been successfully activated. Your Member ID is: ${userId.slice(0, 8).toUpperCase()}. Thank you for joining!`;
+      const firstName = fullName.split(' ')[0] || 'Member';
+      const shortId = userId.slice(0, 8).toUpperCase();
+      const welcomeMsg = `Hello ${firstName}, welcome to our SACCO! Your membership has been successfully activated. Your Member ID is: ${shortId}. Thank you for joining!`;
       try {
         const { inngest } = await import('../../../../lib/inngest/client');
         await inngest.send({
@@ -92,7 +94,12 @@ export async function POST(req: Request) {
             recipientPhone: phone,
             message: welcomeMsg,
             eventType: 'WELCOME',
-            originUrl: req.url
+            originUrl: req.url,
+            templateData: {
+              first_name: firstName,
+              member_id: shortId,
+              sacco_name: 'our SACCO'
+            }
           }
         });
         console.log(`[SMS welcome] Welcome SMS queued in Inngest successfully for ${phone}`);

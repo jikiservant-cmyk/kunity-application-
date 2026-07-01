@@ -40,15 +40,19 @@ export async function POST(req: NextRequest) {
     );
 
     await supabaseAdmin.schema('kunity').from('payment_requests').insert({
+      id: intent.id,
       organization_id: organizationId,
       member_id: memberId,
-      transaction_reference: intent.id,
       amount: amount,
+      currency: currency,
+      phone_number: phoneNumber,
       status: 'pending',
       direction: 'inbound',
       idempotency_key: intent.id,
+      internal_reference: intent.id,
       payment_type: finalPaymentTypeCode,
-      payload: intent
+      payload: intent,
+      provider: paymentGateway.name
     });
 
     return NextResponse.json({ success: true, intent });

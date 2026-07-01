@@ -60,7 +60,7 @@ export async function POST(req: Request) {
 
     // 2. Upsert the template into sms_templates table
     const { data, error } = await supabaseAdmin
-      .schema('kunity')
+      .schema('public')
       .from('sms_templates')
       .upsert({
         tenant_id: tenantId,

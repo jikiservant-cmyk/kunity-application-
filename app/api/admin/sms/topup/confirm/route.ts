@@ -95,18 +95,34 @@ export async function POST(req: NextRequest) {
       .update({ status: 'success', completed_at: new Date().toISOString() })
       .eq('id', intentId);
 
+    let applicationId = null;
+    try {
+      const { data: tenantData } = await supabaseAdmin
+        .schema('public')
+        .from('tenants')
+        .select('application_id')
+        .eq('id', tenantId)
+        .maybeSingle();
+      if (tenantData) {
+        applicationId = tenantData.application_id;
+      }
+    } catch (e) {
+      console.error('Error fetching tenant application_id for topup log:', e);
+    }
+
     const providerSmsId = `tx_topup_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     await supabaseAdmin
-      .schema('kunity')
-      .from('sms_logs')
+      .schema('public')
+      .from('sms_messages')
       .insert({
         tenant_id: tenantId,
-        recipient_phone: momoNumber || 'SYSTEM',
-        message: `SYSTEM CREDIT: Top-up of ${credits.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.new_balance / 40)} credits.`,
+        application_id: applicationId,
+        phone_number: momoNumber || 'SYSTEM',
+        compiled_message: `SYSTEM CREDIT: Top-up of ${credits.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.new_balance / 40)} credits.`,
         cost: -addedAmount,
         status: 'delivered',
-        event_type: 'DEPOSIT_ALERT',
-        provider_sms_id: providerSmsId
+        event_code: 'DEPOSIT_ALERT',
+        provider_message_id: providerSmsId
       });
 
     return NextResponse.json({

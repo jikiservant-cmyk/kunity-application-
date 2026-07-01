@@ -121,7 +121,7 @@ export async function POST(req: Request) {
           
           if (phone) {
             const typeLabel = depInfo.payment_type === 'account_activation' ? 'Account Activation Deposit' : 'Savings Deposit';
-            const messageText = `Dear ${firstName}, your ${typeLabel} of UGX ${formattedAmount} has been received and credited to your SACCO account successfully. TxRef: ${internal_reference}. Thank you!`;
+            const messageText = `Dear {{first_name}}, your {{payment_type}} of UGX {{amount}} has been received and credited to your SACCO account successfully. TxRef: {{tx_ref}}. Thank you!`;
             
             const { inngest } = await import('../../../../lib/inngest/client');
             await inngest.send({
@@ -131,7 +131,13 @@ export async function POST(req: Request) {
                 recipientPhone: phone,
                 message: messageText,
                 eventType: 'DEPOSIT_ALERT',
-                originUrl: req.url
+                originUrl: req.url,
+                templateData: {
+                  first_name: firstName,
+                  amount: formattedAmount,
+                  tx_ref: internal_reference,
+                  payment_type: typeLabel
+                }
               }
             });
             console.log(`[SMS Webhook] Deposit SMS alert successfully queued in Inngest for ${phone} (TxRef: ${internal_reference})`);

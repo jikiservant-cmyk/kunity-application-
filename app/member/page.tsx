@@ -182,7 +182,7 @@ export default function MemberDashboard() {
           .eq('member_id', memberData.id)
           .eq('organization_id', memberData.organization_id)
           .eq('status', 'success')
-          .or('payment_type.eq.account_activation,transaction_reference.like.PAY-ACT-%')
+          .or('payment_type.eq.account_activation,internal_reference.like.PAY-ACT-%')
           .limit(1);
           
         isActivated = paymentData !== null && paymentData.length > 0;

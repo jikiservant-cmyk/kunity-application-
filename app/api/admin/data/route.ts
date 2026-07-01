@@ -124,8 +124,8 @@ export async function POST(req: NextRequest) {
 
     // 3. Fetch SMS History Logs from DB
     const { data: smsLogs, error: smsLogsErr } = await supabaseAdmin
-      .schema('kunity')
-      .from('sms_logs')
+      .schema('public')
+      .from('sms_messages')
       .select('*')
       .eq('tenant_id', orgId)
       .order('created_at', { ascending: false })
@@ -137,8 +137,8 @@ export async function POST(req: NextRequest) {
 
     const smsHistory = (smsLogs || []).map((log: any) => ({
       id: log.id,
-      text: log.message,
-      recipients: log.recipient_phone,
+      text: log.compiled_message || log.message,
+      recipients: log.phone_number || log.recipient_phone,
       count: 1, // Individual API sent logs have 1 recipient
       cost: Math.ceil(parseFloat(log.cost) / 40), // Map UGX cost back to UI credits
       date: log.created_at,
