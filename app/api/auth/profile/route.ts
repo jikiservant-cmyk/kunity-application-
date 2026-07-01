@@ -36,6 +36,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing userId or orgId' }, { status: 400 });
     }
 
+    // Check if the member already exists in members table to avoid duplicate welcome messages if they edit profile
+    const { data: existingMember } = await supabaseAdmin
+      .schema('kunity')
+      .from('members')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const isNewRegistration = !existingMember;
+
     // The database triggers automatically handle creating the row in public.admin_profiles from metadata,
     // which then triggers creation of the kunity.members row.
     // Here we write all the other collected sign-up information directly into kunity.members.
@@ -69,6 +79,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: memberError.message }, { status: 500 });
     }
     console.log('✅ Member upserted successfully:', member);
+
+    // If this is a brand new Sacco member registration, automatically dispatch a welcome message
+    if (isNewRegistration && phone) {
+      const welcomeMsg = `Hello ${fullName.split(' ')[0] || 'Member'}, welcome to our SACCO! Your membership has been successfully activated. Your Member ID is: ${userId.slice(0, 8).toUpperCase()}. Thank you for joining!`;
+      try {
+        const { inngest } = await import('../../../../lib/inngest/client');
+        await inngest.send({
+          name: 'sms/dispatch',
+          data: {
+            tenantId: orgId,
+            recipientPhone: phone,
+            message: welcomeMsg,
+            eventType: 'WELCOME',
+            originUrl: req.url
+          }
+        });
+        console.log(`[SMS welcome] Welcome SMS queued in Inngest successfully for ${phone}`);
+      } catch (smsErr) {
+        console.error('⚠️ Failed to send automatic welcome SMS:', smsErr);
+      }
+    }
 
     return NextResponse.json({ success: true });
 

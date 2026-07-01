@@ -88,6 +88,62 @@ export async function POST(req: Request) {
 
     console.log('[LivePay Webhook] Success:', result);
 
+    // 3. If newly processed successful deposit, send an automated SMS notification
+    if (result && result.message === 'Success recorded. Journal entries created.') {
+      try {
+        // Fetch details of the deposit and the member to dispatch SMS
+        const { data: depInfo, error: depErr } = await supabaseAdmin
+          .schema('kunity')
+          .from('payment_requests')
+          .select(`
+            amount,
+            payment_type,
+            organization_id,
+            member_id,
+            members (
+              first_name,
+              phone
+            )
+          `)
+          .eq('id', result.payment_request_id)
+          .maybeSingle();
+
+        if (depErr) {
+          console.error('[LivePay Webhook] Error retrieving payment request and member details for SMS:', depErr);
+        }
+
+        if (depInfo && depInfo.members) {
+          const memberInfo = depInfo.members as any;
+          const phone = memberInfo.phone;
+          const firstName = memberInfo.first_name || 'Member';
+          const rawAmount = parseFloat(depInfo.amount);
+          const formattedAmount = rawAmount.toLocaleString();
+          
+          if (phone) {
+            const typeLabel = depInfo.payment_type === 'account_activation' ? 'Account Activation Deposit' : 'Savings Deposit';
+            const messageText = `Dear ${firstName}, your ${typeLabel} of UGX ${formattedAmount} has been received and credited to your SACCO account successfully. TxRef: ${internal_reference}. Thank you!`;
+            
+            const { inngest } = await import('../../../../lib/inngest/client');
+            await inngest.send({
+              name: 'sms/dispatch',
+              data: {
+                tenantId: depInfo.organization_id,
+                recipientPhone: phone,
+                message: messageText,
+                eventType: 'DEPOSIT_ALERT',
+                originUrl: req.url
+              }
+            });
+            console.log(`[SMS Webhook] Deposit SMS alert successfully queued in Inngest for ${phone} (TxRef: ${internal_reference})`);
+          } else {
+            console.warn(`[LivePay Webhook] No phone number recorded for member ${depInfo.member_id}. Skipping SMS.`);
+          }
+        }
+      } catch (smsErr) {
+        console.error('⚠️ Failed to dispatch automatic deposit SMS alert:', smsErr);
+      }
+    }
+
     // Returns a 200 OK so LivePay knows we received it
     return NextResponse.json({ success: true, data: result });
   } catch (error: any) {

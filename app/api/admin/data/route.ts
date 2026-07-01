@@ -105,11 +105,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2. Fetch SMS Wallet Balance (default to 250 credits = 10,000 UGX if missing)
-    let walletBalance = 10000.00;
+    // 2. Fetch SMS Wallet Balance
+    let walletBalance = 0;
     const { data: walletData, error: walletErr } = await supabaseAdmin
-      .schema('kunity')
-      .from('tenant_wallets')
+      .schema('public')
+      .from('wallets')
       .select('*')
       .eq('tenant_id', orgId)
       .maybeSingle();
@@ -118,26 +118,7 @@ export async function POST(req: NextRequest) {
       console.error('Error fetching tenant wallet:', walletErr);
     }
 
-    if (!walletData && orgId) {
-      // Auto-create wallet on the fly with default 250 credits
-      const { data: newWallet, error: createWalletErr } = await supabaseAdmin
-        .schema('kunity')
-        .from('tenant_wallets')
-        .insert({
-          tenant_id: orgId,
-          balance: 10000.00,
-          currency: 'UGX',
-          is_active: true
-        })
-        .select('*')
-        .maybeSingle();
-      
-      if (createWalletErr) {
-        console.error('Error auto-creating tenant wallet:', createWalletErr);
-      } else if (newWallet) {
-        walletBalance = parseFloat(newWallet.balance);
-      }
-    } else if (walletData) {
+    if (walletData) {
       walletBalance = parseFloat(walletData.balance);
     }
 

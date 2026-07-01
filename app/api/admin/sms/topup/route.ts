@@ -48,67 +48,42 @@ export async function POST(req: NextRequest) {
     }
 
     // Retrieve tenant wallet
-    let wallet = null;
     const { data: existingWallet } = await supabaseAdmin
-      .schema('kunity')
-      .from('tenant_wallets')
+      .schema('public')
+      .from('wallets')
       .select('*')
       .eq('tenant_id', tenantId)
       .maybeSingle();
 
     if (!existingWallet) {
-      // Auto-create wallet if missing
-      const { data: newWallet } = await supabaseAdmin
-        .schema('kunity')
-        .from('tenant_wallets')
-        .insert({
-          tenant_id: tenantId,
-          balance: 0.00,
-          currency: 'UGX',
-          is_active: true
-        })
-        .select('*')
-        .single();
-      wallet = newWallet;
-    } else {
-      wallet = existingWallet;
+      return NextResponse.json({ error: 'Wallet not found for this tenant. Please provision a wallet first.' }, { status: 400 });
     }
+
+    const wallet = existingWallet;
 
     const currentBalance = parseFloat(wallet.balance);
     const addedAmount = parseFloat(amount);
     const newBalance = currentBalance + addedAmount;
 
-    // Update wallet balance in database
-    const { error: creditErr } = await supabaseAdmin
+    // Update wallet balance in database using RPC
+    const { data: creditResult, error: creditErr } = await supabaseAdmin
       .schema('kunity')
-      .from('tenant_wallets')
-      .update({ balance: newBalance, updated_at: new Date().toISOString() })
-      .eq('id', wallet.id);
+      .rpc('credit_tenant_wallet', { 
+        p_wallet_id: wallet.id, 
+        p_amount: addedAmount 
+      });
 
     if (creditErr) {
       console.error('Error crediting wallet balance:', creditErr);
       return NextResponse.json({ error: 'Failed to update wallet balance' }, { status: 500 });
+    } else if (creditResult && !creditResult.success) {
+      return NextResponse.json({ error: creditResult.error }, { status: 500 });
     }
 
-    // Record credit transaction in wallet transactions ledger
-    const transactionRef = `tx_topup_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    const { error: txErr } = await supabaseAdmin
-      .schema('kunity')
-      .from('wallet_transactions')
-      .insert({
-        wallet_id: wallet.id,
-        type: 'CREDIT',
-        amount: addedAmount,
-        running_balance: newBalance,
-        description: `SMS bundle top-up of ${credits.toLocaleString()} credits via Mobile Money (${momoNumber || 'system'})`,
-        reference: transactionRef
-      });
-
-    if (txErr) {
-      console.error('Error logging top-up transaction ledger:', txErr);
-    }
-
+    // Record credit transaction in wallet transactions ledger is handled by the RPC.
+    
     // Log high-level activity log inside kunity.sms_logs as administrative notification
+    const providerSmsId = `tx_topup_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     await supabaseAdmin
       .schema('kunity')
       .from('sms_logs')
@@ -119,7 +94,7 @@ export async function POST(req: NextRequest) {
         cost: -addedAmount, // Positive cost for debits, negative cost for credits in logs if needed, or 0.00
         status: 'delivered',
         event_type: 'DEPOSIT_ALERT',
-        provider_sms_id: transactionRef
+        provider_sms_id: providerSmsId
       });
 
     return NextResponse.json({
