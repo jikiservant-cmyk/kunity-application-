@@ -225,21 +225,69 @@ export default function AdminDashboard() {
       const data = await res.json();
 
       if (res.ok && data.success) {
-        setShowBuyModal(false);
-        setMomoNumber("");
-        setSmsToast({ 
-          message: `Successfully loaded ${selectedPack.credits.toLocaleString()} SMS credits!`, 
-          type: "success" 
-        });
-        setSelectedPack(null);
-        await fetchData(); // Refresh DB balances and logs
+        const intentId = data.intent.id;
+        console.log("Payment intent created successfully! Status: Pending.", intentId);
+        
+        // Polling NaJiki API mechanism
+        let attempts = 0;
+        const interval = setInterval(async () => {
+          attempts++;
+          try {
+            const response = await fetch(`https://najiki.netlify.app/api/payments/${intentId}`);
+            if (response.ok) {
+              const payment = await response.json();
+              if (payment.status === 'success' || payment.status === 'successful') {
+                clearInterval(interval);
+                
+                // Call confirm route to update wallet and logs
+                const confirmRes = await fetch('/api/admin/sms/topup/confirm', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    token,
+                    intentId,
+                    momoNumber,
+                    credits: selectedPack.credits,
+                    amount: selectedPack.price
+                  })
+                });
+
+                const confirmData = await confirmRes.json();
+                
+                setShowBuyModal(false);
+                setMomoNumber("");
+                setSmsToast({ 
+                  message: `Successfully loaded ${selectedPack.credits.toLocaleString()} SMS credits!`, 
+                  type: "success" 
+                });
+                setSelectedPack(null);
+                setIsProcessingBuy(false);
+                await fetchData(); // Refresh DB balances and logs
+              } else if (payment.status === 'failed') {
+                clearInterval(interval);
+                alert("Mobile Money payment failed. Please check your balance or PIN and try again.");
+                setIsProcessingBuy(false);
+              }
+            }
+          } catch (e) {
+            console.error("Polling error", e);
+          }
+
+          if (attempts > 30) { // Timeout after 1.5 mins
+            clearInterval(interval);
+            alert("Payment confirmation timeout. If you completed the payment, your credits will be updated shortly.");
+            setShowBuyModal(false);
+            setIsProcessingBuy(false);
+          }
+        }, 3000);
+
       } else {
-        alert(data.error || "Failed to purchase SMS bundle.");
+        alert(data.error || "Failed to initiate SMS bundle purchase.");
+        setIsProcessingBuy(false);
       }
     } catch (err) {
       console.error("Error topping up SMS:", err);
       alert("An error occurred during transaction. Please try again.");
-    } finally {
       setIsProcessingBuy(false);
     }
   };

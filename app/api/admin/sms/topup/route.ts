@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServerClient } from '@supabase/ssr';
+import { paymentGateway } from '@/lib/payments/gateway';
 
 export async function POST(req: NextRequest) {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
     if (!supabaseUrl || !supabaseServiceKey) {
       return NextResponse.json({ error: 'Server database configuration missing' }, { status: 500 });
     }
 
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
+    const supabaseAdmin = createServerClient(supabaseUrl, supabaseServiceKey, {
+      cookies: {
+        getAll() { return []; },
+        setAll() {},
+      },
     });
 
     const body = await req.json();
@@ -32,22 +36,19 @@ export async function POST(req: NextRequest) {
     }
 
     // Retrieve admin profile to get organization_id
-    const { data: adminProfile, error: profileErr } = await supabaseAdmin
+    const { data: adminProfile } = await supabaseAdmin
       .from('admin_profiles')
       .select('tenant_id')
       .eq('id', user.id)
       .maybeSingle();
 
-    let tenantId = adminProfile?.tenant_id;
-    if (!tenantId && user.user_metadata?.tenant_id) {
-      tenantId = user.user_metadata.tenant_id;
-    }
+    const tenantId = adminProfile?.tenant_id;
 
     if (!tenantId) {
       return NextResponse.json({ error: 'Unauthorized: Admin is not associated with any tenant' }, { status: 400 });
     }
 
-    // Retrieve tenant wallet
+    // Retrieve tenant wallet just to make sure they have one
     const { data: existingWallet } = await supabaseAdmin
       .schema('public')
       .from('wallets')
@@ -59,53 +60,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Wallet not found for this tenant. Please provision a wallet first.' }, { status: 400 });
     }
 
-    const wallet = existingWallet;
+    // Create payment intent
+    const intent = await paymentGateway.createPaymentIntent(amount, "UGX", {
+      source: 'web_app',
+      phoneNumber: momoNumber,
+      organizationId: tenantId,
+      paymentTypeCode: 'sms_topup',
+      reference: `PAY-SMS-${Date.now()}`
+    });
 
-    const currentBalance = parseFloat(wallet.balance);
-    const addedAmount = parseFloat(amount);
-    const newBalance = currentBalance + addedAmount;
-
-    // Update wallet balance in database using RPC
-    const { data: creditResult, error: creditErr } = await supabaseAdmin
-      .schema('kunity')
-      .rpc('credit_tenant_wallet', { 
-        p_wallet_id: wallet.id, 
-        p_amount: addedAmount 
-      });
-
-    if (creditErr) {
-      console.error('Error crediting wallet balance:', creditErr);
-      return NextResponse.json({ error: 'Failed to update wallet balance' }, { status: 500 });
-    } else if (creditResult && !creditResult.success) {
-      return NextResponse.json({ error: creditResult.error }, { status: 500 });
-    }
-
-    // Record credit transaction in wallet transactions ledger is handled by the RPC.
-    
-    // Log high-level activity log inside kunity.sms_logs as administrative notification
-    const providerSmsId = `tx_topup_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    await supabaseAdmin
-      .schema('kunity')
-      .from('sms_logs')
-      .insert({
-        tenant_id: tenantId,
-        recipient_phone: momoNumber || 'SYSTEM',
-        message: `SYSTEM CREDIT: Top-up of ${credits.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(newBalance / 40)} credits.`,
-        cost: -addedAmount, // Positive cost for debits, negative cost for credits in logs if needed, or 0.00
-        status: 'delivered',
-        event_type: 'DEPOSIT_ALERT',
-        provider_sms_id: providerSmsId
-      });
+    // Record the payment request
+    await supabaseAdmin.schema('kunity').from('payment_requests').insert({
+      id: intent.id,
+      organization_id: tenantId,
+      transaction_reference: intent.id,
+      amount: amount,
+      status: 'pending',
+      direction: 'inbound',
+      idempotency_key: intent.id,
+      payment_type: 'sms_topup',
+      payload: intent
+    });
 
     return NextResponse.json({
       success: true,
-      addedCredits: credits,
-      newBalanceCredits: Math.floor(newBalance / 40),
-      newBalanceUGX: newBalance
+      intent
     });
 
   } catch (err: any) {
-    console.error('Error topping up SMS wallet on server:', err);
+    console.error('Error initiating SMS wallet topup:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
