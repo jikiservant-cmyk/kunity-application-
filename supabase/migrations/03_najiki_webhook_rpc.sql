@@ -2,14 +2,18 @@
 -- Atomic Double-Entry Ledger Posting for Najiki Webhooks (v2 - Production Ready)
 -- Fixes: Idempotency, amount drift, fee handling, account validation, better locking
 
+-- Drop existing functions to avoid parameter order/signature conflicts
+DROP FUNCTION IF EXISTS kunity.process_najiki_webhook(text, text, numeric, numeric, text, text, jsonb);
+DROP FUNCTION IF EXISTS kunity.process_najiki_webhook(text, text, numeric, text, text, jsonb, numeric);
+
 CREATE OR REPLACE FUNCTION kunity.process_najiki_webhook(
   p_reference TEXT,
   p_status TEXT,
   p_amount NUMERIC,
-  p_fee NUMERIC DEFAULT 0,
   p_external_entity_id TEXT,
   p_payment_type TEXT,
-  p_payload JSONB
+  p_payload JSONB,
+  p_fee NUMERIC DEFAULT 0
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -34,7 +38,7 @@ BEGIN
     -- First priority: try exact reference match
     SELECT * INTO v_pr
     FROM kunity.payment_requests
-    WHERE transaction_reference = p_reference
+    WHERE internal_reference = p_reference
     FOR UPDATE;
   END IF;
 
@@ -49,7 +53,7 @@ BEGIN
       AND status = 'pending'
       AND (
         (p_payment_type IS NOT NULL AND payment_type = p_payment_type)
-        OR (p_payment_type IS NULL AND (transaction_reference LIKE 'PAY-ACT-%' OR payment_type IN ('deposit', 'account_activation')))
+        OR (p_payment_type IS NULL AND (internal_reference LIKE 'PAY-ACT-%' OR payment_type IN ('deposit', 'account_activation')))
       )
     ORDER BY created_at DESC
     LIMIT 1
@@ -111,7 +115,7 @@ BEGIN
   --------------------------------------------------------------------------
   -- 6. Account activation flow
   --------------------------------------------------------------------------
-  IF (p_payment_type = 'account_activation' OR v_pr.transaction_reference LIKE 'PAY-ACT-%') THEN
+  IF (p_payment_type = 'account_activation' OR v_pr.internal_reference LIKE 'PAY-ACT-%') THEN
     -- Activate member_savings
     UPDATE kunity.member_savings
     SET status = 'active'
@@ -234,7 +238,7 @@ BEGIN
       organization_id, reference, description, entry_date, source_module
     ) VALUES (
       v_pr.organization_id, 
-      COALESCE(p_reference, v_pr.transaction_reference), 
+      COALESCE(p_reference, v_pr.internal_reference), 
       'Najiki Webhook Deposit', 
       CURRENT_DATE, 
       'najiki_webhook'
