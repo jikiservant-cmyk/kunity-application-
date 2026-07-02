@@ -32,40 +32,31 @@ BEGIN
   v_is_success := (p_status = 'success' OR p_status = 'successful');
 
   --------------------------------------------------------------------------
-  -- 1. Find and lock payment request (transactional safety)
+  -- 1. Validate inputs
   --------------------------------------------------------------------------
-  IF p_reference IS NOT NULL AND p_reference <> '' THEN
-    -- First priority: try exact reference match
-    SELECT * INTO v_pr
-    FROM kunity.payment_requests
-    WHERE internal_reference = p_reference
-    FOR UPDATE;
+  IF p_amount IS NOT NULL AND p_amount <= 0 THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invalid amount');
+  END IF;
+  
+  IF p_fee IS NOT NULL AND (p_fee < 0 OR (p_amount IS NOT NULL AND p_fee > p_amount)) THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invalid fee');
   END IF;
 
-  -- Fallback: if no match by reference OR reference is null
+  --------------------------------------------------------------------------
+  -- 2. Find and lock payment request (transactional safety)
+  --------------------------------------------------------------------------
+  -- Must have a matching internal_reference. Unconditional lookup & lock.
+  SELECT * INTO v_pr
+  FROM kunity.payment_requests
+  WHERE internal_reference = p_reference
+  FOR UPDATE;
+
   IF NOT FOUND THEN
-    -- Only use external_entity_id lookup if reference is missing
-    -- and we have a known payment_type to avoid mismatches
-    SELECT * INTO v_pr
-    FROM kunity.payment_requests
-    WHERE 
-      (member_id::TEXT = p_external_entity_id)
-      AND status = 'pending'
-      AND (
-        (p_payment_type IS NOT NULL AND payment_type = p_payment_type)
-        OR (p_payment_type IS NULL AND (internal_reference LIKE 'PAY-ACT-%' OR payment_type IN ('deposit', 'account_activation')))
-      )
-    ORDER BY created_at DESC
-    LIMIT 1
-    FOR UPDATE;
-
-    IF NOT FOUND THEN
-      RAISE EXCEPTION 'Payment request not found (reference: %, member: %)', p_reference, p_external_entity_id;
-    END IF;
+    RETURN jsonb_build_object('success', false, 'error', 'Unknown payment reference');
   END IF;
 
   --------------------------------------------------------------------------
-  -- 2. Idempotency check (critical - prevent double-spending!)
+  -- 3. Idempotency check (critical - prevent double-spending!)
   --------------------------------------------------------------------------
   IF v_pr.status IN ('success', 'failed') OR v_pr.journal_entry_id IS NOT NULL THEN
     RETURN jsonb_build_object(

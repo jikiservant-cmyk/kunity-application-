@@ -1,3 +1,8 @@
+-- supabase/migrations/10_atomic_wallet_debit.sql
+
+DROP FUNCTION IF EXISTS kunity.debit_tenant_wallet(text, numeric);
+DROP FUNCTION IF EXISTS kunity.credit_tenant_wallet(text, numeric);
+
 CREATE OR REPLACE FUNCTION kunity.debit_tenant_wallet(
   p_wallet_id uuid,
   p_amount numeric
@@ -6,6 +11,10 @@ DECLARE
   v_wallet record;
   v_new_balance numeric;
 BEGIN
+  IF p_amount IS NULL OR p_amount <= 0 THEN
+    RETURN json_build_object('success', false, 'error', 'Invalid debit amount');
+  END IF;
+
   -- Row-level lock to prevent concurrent modifications
   SELECT * INTO v_wallet
   FROM kunity.tenant_wallets
@@ -42,6 +51,10 @@ DECLARE
   v_wallet record;
   v_new_balance numeric;
 BEGIN
+  IF p_amount IS NULL OR p_amount <= 0 THEN
+    RETURN json_build_object('success', false, 'error', 'Invalid credit amount');
+  END IF;
+
   -- Row-level lock to prevent concurrent modifications
   SELECT * INTO v_wallet
   FROM kunity.tenant_wallets

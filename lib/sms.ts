@@ -127,6 +127,7 @@ export async function sendSms({
           phone_number: recipientPhone,
           compiled_message: finalMessage,
           cost: 0,
+          transaction_type: 'debit',
           status: 'failed',
           event_code: eventType,
           provider_message_id: `failed_${Date.now()}`
@@ -165,6 +166,7 @@ export async function sendSms({
         phone_number: recipientPhone,
         compiled_message: finalMessage,
         cost: totalCost,
+        transaction_type: 'debit',
         status: 'sent',
         event_code: eventType,
         provider_message_id: providerSmsId
@@ -198,42 +200,56 @@ export async function sendSms({
           to: recipientPhone,
           message: finalMessage,
           eventType
-        })
+        }),
+        signal: AbortSignal.timeout(10000)
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`NaJiki Gateway returned ${response.status}: ${errorText}`);
+        throw new Error(`HTTP_${response.status}: ${errorText}`);
       }
       console.log(`[SMS Service] Successfully dispatched to NaJiki for ${recipientPhone}`);
     } catch (err: any) {
       console.error(`[SMS Service] NaJiki dispatch failed:`, err);
       
-      // 7. Refund the wallet since dispatch failed
-      let refundBalance = finalBalance + totalCost;
-      const { data: creditResult, error: creditErr } = await supabaseAdmin
-        .schema('kunity')
-        .rpc('credit_tenant_wallet', { 
-          p_wallet_id: wallet.id, 
-          p_amount: totalCost 
-        });
+      const isHttpError = err.message.startsWith('HTTP_');
+      const isClientError = isHttpError && err.message.match(/HTTP_4\d\d/);
+      
+      // 7. Refund the wallet ONLY if it's a known HTTP error (e.g. 400 Bad Request) 
+      // Do NOT refund on network timeouts or 5xx, as the message might still be processing.
+      if (isClientError) {
+        let refundBalance = finalBalance + totalCost;
+        const { data: creditResult, error: creditErr } = await supabaseAdmin
+          .schema('kunity')
+          .rpc('credit_tenant_wallet', { 
+            p_wallet_id: wallet.id, 
+            p_amount: totalCost 
+          });
 
-      if (creditErr) {
-        console.error('[SMS Service] Failed to credit wallet atomically:', creditErr);
-      } else if (creditResult && creditResult.success) {
-        refundBalance = creditResult.new_balance;
+        if (creditErr) {
+          console.error('[SMS Service] Failed to credit wallet atomically:', creditErr);
+        } else if (creditResult && creditResult.success) {
+          refundBalance = creditResult.new_balance;
+        }
+
+        // 8. Update the SMS log status to failed
+        await supabaseAdmin
+          .schema('public')
+          .from('sms_messages')
+          .update({ status: 'failed_refunded' })
+          .eq('provider_message_id', providerSmsId);
+
+        return { success: false, error: `NaJiki dispatch failed (client error) and refunded. Error: ${err.message}` };
       }
 
-      // 8. Refund transaction ledger is now handled automatically by the RPC
-
-      // 9. Update the SMS log status to failed
+      // 8. For network timeouts or 5xx, mark as 'unknown' or 'failed' but DO NOT refund to prevent abuse.
       await supabaseAdmin
         .schema('public')
         .from('sms_messages')
-        .update({ status: 'failed' })
+        .update({ status: 'failed_no_refund' })
         .eq('provider_message_id', providerSmsId);
 
-      return { success: false, error: `NaJiki dispatch failed and refunded. Error: ${err.message}` };
+      return { success: false, error: `NaJiki dispatch failed (network/server error). NO refund issued. Error: ${err.message}` };
     }
 
     return {

@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, intentId, momoNumber, credits, amount } = body;
+    const { token, intentId, momoNumber, credits } = body;
 
     if (!token || !intentId) {
       return NextResponse.json({ error: 'Missing token or intentId' }, { status: 400 });
@@ -36,16 +36,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 400 });
     }
 
-    // Double check status with Najiki
-    const najikiRes = await fetch(`https://najiki.netlify.app/api/payments/${intentId}`);
-    if (!najikiRes.ok) {
-      return NextResponse.json({ error: 'Failed to verify payment with NaJiki' }, { status: 400 });
-    }
-    const payment = await najikiRes.json();
-    if (payment.status !== 'success' && payment.status !== 'successful') {
-      return NextResponse.json({ error: 'Payment is not yet successful' }, { status: 400 });
-    }
-
     // Check payment_request
     const { data: request } = await supabaseAdmin
       .schema('kunity')
@@ -57,9 +47,30 @@ export async function POST(req: NextRequest) {
     if (!request) {
       return NextResponse.json({ error: 'Payment request not found' }, { status: 404 });
     }
+    
+    // Ensure the payment request actually belongs to this tenant
+    if (request.organization_id !== tenantId) {
+      return NextResponse.json({ error: 'Unauthorized: Payment request does not belong to this tenant' }, { status: 403 });
+    }
 
     if (request.status === 'success') {
        return NextResponse.json({ success: true, message: 'Already processed' });
+    }
+
+    // Double check status with Najiki
+    const najikiRes = await fetch(`https://najiki.netlify.app/api/payments/${intentId}`);
+    if (!najikiRes.ok) {
+      return NextResponse.json({ error: 'Failed to verify payment with NaJiki' }, { status: 400 });
+    }
+    const payment = await najikiRes.json();
+    if (payment.status !== 'success' && payment.status !== 'successful') {
+      return NextResponse.json({ error: 'Payment is not yet successful' }, { status: 400 });
+    }
+    
+    // Validate amount from gateway matches what we expect
+    const expectedAmount = Number(request.amount);
+    if (Number(payment.amount) !== expectedAmount) {
+      return NextResponse.json({ error: 'Payment amount mismatch' }, { status: 400 });
     }
 
     // Retrieve tenant wallet
@@ -75,7 +86,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Credit wallet using RPC
-    const addedAmount = parseFloat(amount);
+    const addedAmount = expectedAmount;
     const { data: creditResult, error: creditErr } = await supabaseAdmin
       .schema('kunity')
       .rpc('credit_tenant_wallet', { 
@@ -119,7 +130,8 @@ export async function POST(req: NextRequest) {
         application_id: applicationId,
         phone_number: momoNumber || 'SYSTEM',
         compiled_message: `SYSTEM CREDIT: Top-up of ${credits.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.new_balance / 40)} credits.`,
-        cost: -addedAmount,
+        cost: addedAmount,
+        transaction_type: 'credit',
         status: 'delivered',
         event_code: 'DEPOSIT_ALERT',
         provider_message_id: providerSmsId

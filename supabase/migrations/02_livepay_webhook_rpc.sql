@@ -21,17 +21,26 @@ DECLARE
   v_member_savings_account_id UUID;
   v_fee_account_id UUID;
 BEGIN
-  -- 1. Fetch the payment request
+  -- 1. Validate inputs
+  IF p_amount IS NOT NULL AND p_amount <= 0 THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invalid amount');
+  END IF;
+  
+  IF p_fee IS NOT NULL AND (p_fee < 0 OR (p_amount IS NOT NULL AND p_fee > p_amount)) THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Invalid fee');
+  END IF;
+
+  -- 2. Fetch the payment request
   SELECT * INTO v_pr
   FROM kunity.payment_requests
   WHERE internal_reference = p_internal_reference
   FOR UPDATE; -- Lock to prevent concurrent duplicate webhooks
 
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'Payment request with internal_reference % not found', p_internal_reference;
+    RETURN jsonb_build_object('success', false, 'error', 'Unknown payment reference');
   END IF;
 
-  -- 2. Idempotency Check
+  -- 3. Idempotency Check
   -- If already processed (success or failed), return early
   IF v_pr.status IN ('success', 'failed') THEN
     RETURN jsonb_build_object(
