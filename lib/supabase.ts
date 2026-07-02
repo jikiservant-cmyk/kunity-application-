@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createBrowserClient } from '@supabase/ssr';
 
 const getEnv = (key: string) => {
   if (typeof window !== 'undefined' && (window as any).ENV) {
@@ -10,10 +10,14 @@ const getEnv = (key: string) => {
 const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL') || 'https://demo-placeholder.supabase.co';
 const supabaseAnonKey = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') || 'placeholder-key';
 
-export const supabase = createClient(
+export const supabase = createBrowserClient(
   supabaseUrl,
   supabaseAnonKey,
   {
+    cookieOptions: {
+      sameSite: 'none',
+      secure: true
+    },
     db: {
       schema: 'kunity'
     }

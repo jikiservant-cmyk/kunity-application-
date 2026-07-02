@@ -36,28 +36,29 @@ function AuthContent() {
 
   const loadOrgs = async () => {
     console.log("🚀 loadOrgs starting...");
-    let { data: orgs, error } = await supabase.schema('kunity').from('organizations').select('id, name');
-    console.log("✅ loadOrgs - orgs loaded:", orgs, "error:", error);
-    
-    if (!orgs || orgs.length === 0) {
-      console.log("🆕 No orgs found - creating default...");
-      const { data: newOrg, error: newOrgError } = await supabase.schema('kunity').from('organizations').insert({
-        name: 'Default Sacco',
-        code: 'DEF',
-        email: 'hello@def.com'
-      }).select('id, name').single();
-      console.log("✅ newOrg created:", newOrg, "error:", newOrgError);
-      if (newOrg) {
-        orgs = [newOrg];
+    try {
+      const response = await fetch('/api/organizations');
+      if (!response.ok) {
+        throw new Error(`Server returned status ${response.status}`);
       }
-    }
-    
-    if (orgs && orgs.length > 0) {
-      setOrganizations(orgs);
-      setOrgId(orgs[0].id);
-    } else {
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      const orgs = data.organizations || [];
+      console.log("✅ loadOrgs - orgs loaded from API:", orgs);
+      
+      if (orgs.length > 0) {
+        setOrganizations(orgs);
+        setOrgId(orgs[0].id);
+      } else {
+        setOrganizations([]);
+        setError("Could not load cooperatives: No registered SACCOs found.");
+      }
+    } catch (err: any) {
+      console.error("❌ loadOrgs failed:", err);
       setOrganizations([]);
-      setError("Could not load cooperatives. " + (error?.message || ""));
+      setError("Could not load cooperatives. " + (err.message || ""));
     }
   };
 
@@ -187,12 +188,31 @@ function AuthContent() {
         if (signInError) throw signInError;
         
         if (data.user) {
-          // Skip profiles table for now, just assume member role
+          // Fetch the actual role to redirect cleanly
+          let isSaccoAdmin = false;
+          try {
+            const { data: profile } = await supabase
+              .schema('public')
+              .from('admin_profiles')
+              .select('role')
+              .eq('id', data.user.id)
+              .maybeSingle();
+            
+            const role = profile?.role || 'member';
+            isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin', 'admin'].includes(role);
+          } catch (profileErr) {
+            console.warn("⚠️ Failed to fetch profile role on login:", profileErr);
+          }
+
           await supabase.auth.refreshSession();
           router.refresh();
 
           setTimeout(() => {
-            router.push('/member');
+            if (isSaccoAdmin) {
+              router.push('/admin');
+            } else {
+              router.push('/member');
+            }
           }, 500);
         }
       }
