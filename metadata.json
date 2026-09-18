@@ -1,0 +1,6 @@
+{
+  "name": "Sacco Connect",
+  "description": "Manage Sacco wallets, loans, and transaction tracking with ease.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
