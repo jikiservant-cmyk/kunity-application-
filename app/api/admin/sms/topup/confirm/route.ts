@@ -106,9 +106,14 @@ export async function POST(req: NextRequest) {
     // Validate amount from gateway matches what we expect.
     // FIN-12: compare with a small tolerance — strict !== breaks when the
     // gateway returns the amount as a string or with different precision.
+    // FIN-25: Number.isFinite guard — if the gateway returns a missing/garbage
+    // amount, Number(...) is NaN and `NaN > 0.01` is false, which used to
+    // silently PASS this check.
     const expectedAmount = Number(request.amount);
+    const gatewayAmount = Number(payment.amount);
     if (!Number.isFinite(expectedAmount) ||
-        Math.abs(Number(payment.amount) - expectedAmount) > 0.01) {
+        !Number.isFinite(gatewayAmount) ||
+        Math.abs(gatewayAmount - expectedAmount) > 0.01) {
       return NextResponse.json({ error: 'Payment amount mismatch' }, { status: 400 });
     }
 

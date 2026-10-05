@@ -53,6 +53,91 @@ CREATE INDEX IF NOT EXISTS idx_loan_repayments_loan_id ON kunity.loan_repayments
 CREATE INDEX IF NOT EXISTS idx_loan_repayments_member_id ON kunity.loan_repayments(member_id);
 
 -- ============================================================================
+-- 0. kunity._org_system_account — FIN-22 helper: resolve an ORGANIZATIONAL
+--    (member_id IS NULL) system account deterministically, self-provisioning
+--    one if the org has none. The app creates MEMBER wallet accounts with
+--    account_category='asset', so any account picker that only filters on
+--    org+asset+active can accidentally select a MEMBER's personal account as
+--    the organizational cash/receivable account — posting org-wide movements
+--    into a member's transaction feed. Every org-account pick in this
+--    migration goes through this helper.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION kunity._org_system_account(
+  p_organization_id UUID,
+  p_code TEXT,
+  p_name TEXT,
+  p_category TEXT,
+  p_pattern TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, kunity, pg_temp
+AS $$
+DECLARE
+  v_id UUID;
+BEGIN
+  -- 1. Exact code match (organizational accounts only)
+  SELECT id INTO v_id
+  FROM kunity.accounts
+  WHERE organization_id = p_organization_id
+    AND member_id IS NULL
+    AND code = p_code
+  ORDER BY is_system DESC, created_at ASC
+  LIMIT 1;
+
+  IF v_id IS NOT NULL THEN
+    RETURN v_id;
+  END IF;
+
+  -- 2. Fuzzy match on existing organizational accounts (name/code pattern,
+  --    system accounts preferred). Operator-created accounts (is_system=false)
+  --    with a matching name still count.
+  IF p_pattern IS NOT NULL AND p_pattern <> '' THEN
+    SELECT id INTO v_id
+    FROM kunity.accounts
+    WHERE organization_id = p_organization_id
+      AND member_id IS NULL
+      AND account_category = p_category
+      AND (code ILIKE p_pattern OR name ILIKE p_pattern)
+    ORDER BY is_system DESC, created_at ASC
+    LIMIT 1;
+
+    IF v_id IS NOT NULL THEN
+      RETURN v_id;
+    END IF;
+  END IF;
+
+  -- 3. Self-provision a system account so the books never depend on manual
+  --    setup (idempotent; re-selects if a concurrent transaction created it)
+  BEGIN
+    INSERT INTO kunity.accounts (
+      organization_id, member_id, name, code, account_category,
+      currency, cached_balance, is_active, is_system
+    ) VALUES (
+      p_organization_id, NULL, p_name, p_code, p_category,
+      'UGX', 0, true, true
+    )
+    RETURNING id INTO v_id;
+
+    RETURN v_id;
+  EXCEPTION WHEN unique_violation THEN
+    SELECT id INTO v_id
+    FROM kunity.accounts
+    WHERE organization_id = p_organization_id
+      AND member_id IS NULL
+      AND code = p_code
+    ORDER BY created_at ASC
+    LIMIT 1;
+
+    RETURN v_id;
+  END;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION kunity._org_system_account(UUID, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
+-- ============================================================================
 -- 1. member_withdraw_atomic — balanced double-entry + eligibility checks
 -- ============================================================================
 CREATE OR REPLACE FUNCTION kunity.member_withdraw_atomic(
@@ -114,14 +199,12 @@ BEGIN
   SET cached_balance = cached_balance - p_amount, updated_at = NOW()
   WHERE id = p_account_id;
 
-  -- FIN-04/09: deterministic organizational cash account; entry must balance
-  SELECT id INTO v_cash_account_id
-  FROM kunity.accounts
-  WHERE organization_id = p_organization_id
-    AND account_category = 'asset'
-    AND is_active = true
-  ORDER BY (CASE WHEN is_system THEN 0 ELSE 1 END), created_at ASC
-  LIMIT 1;
+  -- FIN-04/09/22: deterministic ORGANIZATIONAL cash account (never a member's
+  -- personal wallet; self-provisions a system wallet account if none exists)
+  v_cash_account_id := kunity._org_system_account(
+    p_organization_id, 'SYS-WALLET-01', 'Organizational Mobile Money Wallet', 'asset',
+    '%WALLET%'
+  );
 
   IF v_cash_account_id IS NULL THEN
     RAISE EXCEPTION 'Missing organizational cash/wallet asset account for org %', p_organization_id;
@@ -171,10 +254,14 @@ DECLARE
   v_account RECORD;
   v_loan RECORD;
   v_entry_id UUID;
-  v_cash_account_id UUID;
   v_paid NUMERIC;
   v_total NUMERIC;
   v_member_status TEXT;
+  v_receivable_account_id UUID;
+  v_interest_account_id UUID;
+  v_receivable_outstanding NUMERIC;
+  v_to_receivable NUMERIC;
+  v_to_interest NUMERIC;
 BEGIN
   IF p_amount IS NULL OR p_amount <= 0 THEN
     RAISE EXCEPTION 'Repayment amount must be greater than zero';
@@ -225,6 +312,12 @@ BEGIN
     RAISE EXCEPTION 'Loan not found';
   END IF;
 
+  -- FIN-26: only a DISBURSED loan can be repaid. Repaying a pending
+  -- (never-disbursed) or already-completed loan corrupts the receivable.
+  IF v_loan.status IS DISTINCT FROM 'approved' THEN
+    RAISE EXCEPTION 'Loan is not in a repayable state (status: %)', v_loan.status;
+  END IF;
+
   -- Aggregate repayments in a separate (lock-free) query; concurrency for the
   -- same loan is serialized by the loan row lock taken above.
   SELECT COALESCE(SUM(principal_paid), 0) INTO v_paid
@@ -242,21 +335,41 @@ BEGIN
   SET cached_balance = cached_balance - p_amount, updated_at = NOW()
   WHERE id = p_account_id;
 
-  -- FIN-09: deterministic cash account; FIN-04: balanced entry
-  SELECT id INTO v_cash_account_id
-  FROM kunity.accounts
-  WHERE organization_id = p_organization_id
-    AND account_category = 'asset'
-    AND is_active = true
-  ORDER BY (CASE WHEN is_system THEN 0 ELSE 1 END), created_at ASC
-  LIMIT 1;
+  -- FIN-21: a wallet repayment moves NO cash — the money was already inside
+  -- the SACCO. The journal settles the loan receivable and recognizes
+  -- interest income instead of (wrongly) crediting the cash account.
+  v_receivable_account_id := kunity._org_system_account(
+    p_organization_id, 'SYS-LOANS', 'Loan Receivable', 'asset', '%LOAN%'
+  );
 
-  IF v_cash_account_id IS NULL THEN
-    RAISE EXCEPTION 'Missing organizational cash/wallet asset account for org %', p_organization_id;
+  IF v_receivable_account_id IS NULL THEN
+    RAISE EXCEPTION 'Missing loan receivable account for org %', p_organization_id;
   END IF;
 
-  -- Journal (balanced: debit member savings, credit organizational cash —
-  -- the money stays inside the SACCO, moving from member savings to repayment)
+  -- Outstanding receivable for THIS loan = debits - credits posted against
+  -- the receivable account with this loan_id (disbursement debits it,
+  -- repayments credit it).
+  SELECT COALESCE(SUM(debit - credit), 0) INTO v_receivable_outstanding
+  FROM kunity.journal_lines
+  WHERE account_id = v_receivable_account_id
+    AND loan_id = p_loan_id;
+
+  v_to_receivable := LEAST(p_amount, GREATEST(v_receivable_outstanding, 0));
+  v_to_interest := p_amount - v_to_receivable;
+
+  IF v_to_interest > 0 THEN
+    v_interest_account_id := kunity._org_system_account(
+      p_organization_id, 'SYS-INTEREST', 'Interest Income', 'income', '%INTEREST%'
+    );
+
+    IF v_interest_account_id IS NULL THEN
+      RAISE EXCEPTION 'Missing interest income account for org %', p_organization_id;
+    END IF;
+  END IF;
+
+  -- Journal (balanced: debit member savings, credit loan receivable
+  -- settlement + interest income). Institutional float is UNTOUCHED — no
+  -- external cash moves during a wallet repayment.
   INSERT INTO kunity.journal_entries (organization_id, description, created_by, created_at, updated_at)
   VALUES (p_organization_id, 'Loan Repayment', p_member_id, NOW(), NOW())
   RETURNING id INTO v_entry_id;
@@ -265,10 +378,15 @@ BEGIN
   VALUES (v_entry_id, p_account_id, p_member_id, 'repayment_principal', p_amount, 0, p_loan_id, 'Member loan repayment', NOW(), NOW());
 
   INSERT INTO kunity.journal_lines (journal_entry_id, account_id, member_id, line_type, debit, credit, loan_id, description, created_at, updated_at)
-  VALUES (v_entry_id, v_cash_account_id, NULL, 'repayment', 0, p_amount, p_loan_id, 'Loan repayment received', NOW(), NOW());
+  VALUES (v_entry_id, v_receivable_account_id, NULL, 'repayment', 0, v_to_receivable, p_loan_id, 'Loan receivable settled', NOW(), NOW());
 
-  INSERT INTO kunity.loan_repayments (organization_id, loan_id, journal_entry_id, member_id, principal_paid, created_by, created_at)
-  VALUES (p_organization_id, p_loan_id, v_entry_id, p_member_id, p_amount, p_member_id, NOW());
+  IF v_to_interest > 0 THEN
+    INSERT INTO kunity.journal_lines (journal_entry_id, account_id, member_id, line_type, debit, credit, loan_id, description, created_at, updated_at)
+    VALUES (v_entry_id, v_interest_account_id, NULL, 'interest', 0, v_to_interest, p_loan_id, 'Loan interest earned', NOW(), NOW());
+  END IF;
+
+  INSERT INTO kunity.loan_repayments (organization_id, loan_id, journal_entry_id, member_id, principal_paid, interest_paid, created_by, created_at)
+  VALUES (p_organization_id, p_loan_id, v_entry_id, p_member_id, v_to_receivable, v_to_interest, p_member_id, NOW());
 
   IF (v_paid + p_amount) >= v_total - 0.000001 THEN
     UPDATE kunity.loans SET status = 'completed', updated_at = NOW() WHERE id = p_loan_id;
@@ -321,7 +439,8 @@ END;
 $$;
 
 -- ============================================================================
--- 4. disburse_loan_atomic — balanced double-entry + float maintenance
+-- 4. disburse_loan_atomic — FIN-20: internal transfer (receivable <-> wallet);
+--    balanced double-entry; institutional float NOT touched at disbursement
 -- ============================================================================
 CREATE OR REPLACE FUNCTION kunity.disburse_loan_atomic(
   p_loan_id UUID,
@@ -337,7 +456,7 @@ AS $$
 DECLARE
   v_loan RECORD;
   v_account RECORD;
-  v_cash_account_id UUID;
+  v_receivable_account_id UUID;
   v_entry_id UUID;
 BEGIN
   -- 1. Lock and fetch loan (must belong to the borrower)
@@ -367,56 +486,68 @@ BEGIN
   SET status = 'approved', updated_at = NOW()
   WHERE id = p_loan_id;
 
-  -- 3. Lock and fetch the member's account (FIN-09: deterministic pick)
-  SELECT * INTO v_account
-  FROM kunity.accounts
-  WHERE member_id = p_member_id AND organization_id = p_organization_id
-  ORDER BY is_active DESC, created_at ASC
+  -- 3. Lock and fetch the member's account. FIN-09/22: prefer the
+  --    member_savings-linked account (the app's canonical linkage), then the
+  --    member's accounts table entries. The picked account MUST be active —
+  --    loan proceeds must not land in a frozen/pending wallet.
+  SELECT a.* INTO v_account
+  FROM kunity.accounts a
+  JOIN kunity.member_savings ms ON ms.account_id = a.id
+  WHERE a.member_id = p_member_id
+    AND a.organization_id = p_organization_id
+    AND ms.organization_id = p_organization_id
+    AND ms.deleted_at IS NULL
+  ORDER BY (CASE WHEN ms.status = 'active' THEN 0 ELSE 1 END),
+           (CASE WHEN a.is_active THEN 0 ELSE 1 END),
+           a.created_at ASC
   LIMIT 1
-  FOR UPDATE;
+  FOR UPDATE OF a;
 
-  IF NOT FOUND THEN
+  IF v_account.id IS NULL THEN
+    SELECT * INTO v_account
+    FROM kunity.accounts
+    WHERE member_id = p_member_id AND organization_id = p_organization_id
+    ORDER BY is_active DESC, created_at ASC
+    LIMIT 1
+    FOR UPDATE;
+  END IF;
+
+  IF v_account.id IS NULL THEN
     RAISE EXCEPTION 'Member wallet account not found in this organization';
   END IF;
 
-  -- 4. Update account balance
+  IF v_account.is_active = false THEN
+    RAISE EXCEPTION 'Member wallet account is not active';
+  END IF;
+
+  -- 4. Update account balance (loan proceeds land in the member's wallet)
   UPDATE kunity.accounts
   SET cached_balance = COALESCE(cached_balance, 0) + p_disbursement_amount, updated_at = NOW()
   WHERE id = v_account.id;
 
-  -- 5. FIN-09: deterministic organizational cash account
-  SELECT id INTO v_cash_account_id
-  FROM kunity.accounts
-  WHERE organization_id = p_organization_id
-    AND account_category = 'asset'
-    AND is_active = true
-  ORDER BY (CASE WHEN is_system THEN 0 ELSE 1 END), created_at ASC
-  LIMIT 1;
+  -- 5. FIN-20: disbursement is an INTERNAL transfer — the loan receivable is
+  --    created and the member's wallet is credited. NO cash leaves the SACCO
+  --    here (the member withdraws the proceeds later, which is when the
+  --    float decrements), so the organizational float is UNTOUCHED and the
+  --    journal must NOT debit the cash account.
+  v_receivable_account_id := kunity._org_system_account(
+    p_organization_id, 'SYS-LOANS', 'Loan Receivable', 'asset', '%LOAN%'
+  );
 
-  IF v_cash_account_id IS NULL THEN
-    RAISE EXCEPTION 'Missing organizational cash/wallet asset account for org %', p_organization_id;
+  IF v_receivable_account_id IS NULL THEN
+    RAISE EXCEPTION 'Missing loan receivable account for org %', p_organization_id;
   END IF;
 
-  -- 6. Journal (balanced: debit organizational cash, credit member account)
+  -- 6. Journal (balanced: debit loan receivable, credit member account)
   INSERT INTO kunity.journal_entries (organization_id, description, created_at, updated_at)
   VALUES (p_organization_id, 'Loan Disbursement (Loan ID: ' || left(p_loan_id::text, 8) || ')', NOW(), NOW())
   RETURNING id INTO v_entry_id;
 
   INSERT INTO kunity.journal_lines (journal_entry_id, account_id, member_id, line_type, debit, credit, loan_id, description, created_at, updated_at)
-  VALUES (v_entry_id, v_cash_account_id, NULL, 'loan_disbursement', p_disbursement_amount, 0, p_loan_id, 'Loan cash disbursed', NOW(), NOW());
+  VALUES (v_entry_id, v_receivable_account_id, NULL, 'loan_disbursement', p_disbursement_amount, 0, p_loan_id, 'Loan receivable created', NOW(), NOW());
 
   INSERT INTO kunity.journal_lines (journal_entry_id, account_id, member_id, line_type, debit, credit, loan_id, description, created_at, updated_at)
   VALUES (v_entry_id, v_account.id, p_member_id, 'loan_disbursement', 0, p_disbursement_amount, p_loan_id, 'Loan proceeds credited to member', NOW(), NOW());
-
-  -- 7. FIN-04: institutional float decreases when loan cash leaves the SACCO
-  UPDATE kunity.sacco_wallets
-  SET balance = balance - p_disbursement_amount, last_updated = NOW()
-  WHERE organization_id = p_organization_id;
-
-  IF NOT FOUND THEN
-    INSERT INTO kunity.sacco_wallets (organization_id, balance, last_updated)
-    VALUES (p_organization_id, -p_disbursement_amount, NOW());
-  END IF;
 
   RETURN jsonb_build_object('success', true, 'message', 'Loan successfully approved and funds disbursed');
 END;
@@ -452,6 +583,7 @@ DECLARE
   v_fee NUMERIC;
   v_effective_type TEXT;
   v_is_activation BOOLEAN := false;
+  v_payload_currency TEXT;
   -- FIN-17: %TYPE so the assignment works whether the live column is the
   -- kunity.payment_status enum or plain text (the original CASE-of-literals
   -- pattern crashes with 42804 when the column is the enum type).
@@ -514,6 +646,46 @@ BEGIN
     v_pr.amount := p_amount;
   END IF;
   v_fee := COALESCE(p_fee, 0);
+
+  --------------------------------------------------------------------------
+  -- 4b. FIN-24: currency consistency — the collected currency must match the
+  --     intent's currency. Amounts matching numerically across DIFFERENT
+  --     currencies would credit UGX books with foreign-currency money.
+  --     (The webhook payload carries the gateway currency.)
+  --------------------------------------------------------------------------
+  v_payload_currency := NULLIF(LOWER(TRIM(COALESCE(p_payload->>'currency', ''))), '');
+  IF v_payload_currency IS NOT NULL
+     AND v_pr.currency IS NOT NULL
+     AND NULLIF(LOWER(TRIM(v_pr.currency::text)), '') IS NOT NULL
+     AND v_payload_currency <> LOWER(TRIM(v_pr.currency::text)) THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Currency mismatch: refusing to process payment in a different currency than the intent',
+      'stored_currency', v_pr.currency,
+      'webhook_currency', v_payload_currency
+    );
+  END IF;
+
+  --------------------------------------------------------------------------
+  -- 4c. FIN-23: payment-type whitelist. The payment type is client-controllable
+  --     at intent creation; previously ANY unrecognized type flipped the
+  --     request to 'success' with NO ledger posting ("no specific action
+  --     taken") — money collected, nothing recorded, member never credited.
+  --     Unknown types now FAIL CLOSED: the request stays 'pending' and is
+  --     flagged for review. ('BUY_SMS' topups are credited application-side
+  --     from wallet_transactions and never need RPC-side ledger posting.)
+  --------------------------------------------------------------------------
+  v_effective_type := COALESCE(NULLIF(p_payment_type, ''), v_pr.payment_type, 'deposit');
+  IF v_is_success
+     AND v_effective_type NOT IN ('deposit', 'account_activation')
+     AND v_pr.internal_reference NOT LIKE 'PAY-ACT-%' THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Unrecognized payment type — held for review',
+      'payment_type', v_effective_type,
+      'payment_request_id', v_pr.id
+    );
+  END IF;
 
   --------------------------------------------------------------------------
   -- 5. FIN-10: intermediate statuses (pending/processing) must NOT flip the
@@ -593,17 +765,14 @@ BEGIN
       RAISE EXCEPTION 'Missing member account for member %', v_pr.member_id;
     END IF;
 
-    -- B. Deterministic organizational cash account
-    SELECT id INTO v_cash_account_id
-    FROM kunity.accounts
-    WHERE organization_id = v_pr.organization_id
-      AND account_category = 'asset'
-      AND is_active = true
-    ORDER BY
-      (CASE WHEN is_system THEN 0 ELSE 1 END),
-      (CASE WHEN code ILIKE '%WALLET%' OR code ILIKE '%CASH%' OR name ILIKE '%WALLET%' OR name ILIKE '%CASH%' THEN 0 ELSE 1 END),
-      created_at ASC
-    LIMIT 1;
+    -- B. FIN-22: deterministic ORGANIZATIONAL cash account (member_id IS
+    --    NULL — the app creates member wallets as account_category='asset',
+    --    so an unscoped pick could post org cash to a member's personal
+    --    account). Self-provisions a system wallet if none exists.
+    v_cash_account_id := kunity._org_system_account(
+      v_pr.organization_id, 'SYS-WALLET-01', 'Organizational Mobile Money Wallet', 'asset',
+      '%WALLET%'
+    );
 
     IF v_cash_account_id IS NULL THEN
       RAISE EXCEPTION 'Missing cash/wallet asset account for org %', v_pr.organization_id;
@@ -616,6 +785,7 @@ BEGIN
       SELECT id INTO v_fee_account_id
       FROM kunity.accounts
       WHERE organization_id = v_pr.organization_id
+        AND member_id IS NULL
         AND account_category IN ('income', 'expense')
         AND is_active = true
         AND is_system = true
@@ -779,6 +949,33 @@ BEGIN
     v_pr.amount := p_amount;
   END IF;
 
+  -- 4b. FIN-24: currency consistency (fail closed on mismatch)
+  IF p_currency IS NOT NULL
+     AND NULLIF(TRIM(p_currency), '') IS NOT NULL
+     AND v_pr.currency IS NOT NULL
+     AND NULLIF(TRIM(v_pr.currency::text), '') IS NOT NULL
+     AND LOWER(TRIM(p_currency)) <> LOWER(TRIM(v_pr.currency::text)) THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Currency mismatch: refusing to process payment in a different currency than the intent',
+      'stored_currency', v_pr.currency,
+      'webhook_currency', p_currency
+    );
+  END IF;
+
+  -- 4c. FIN-23: payment-type whitelist (fail closed on unknown types).
+  --     LivePay intents are member deposits/activations only.
+  IF v_is_success
+     AND COALESCE(NULLIF(v_pr.payment_type, ''), 'deposit') NOT IN ('deposit', 'account_activation')
+     AND v_pr.internal_reference NOT LIKE 'PAY-ACT-%' THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Unrecognized payment type — held for review',
+      'payment_type', v_pr.payment_type,
+      'payment_request_id', v_pr.id
+    );
+  END IF;
+
   -- 5. FIN-10: intermediate statuses must not poison the request
   IF NOT v_is_success AND NOT v_is_failure THEN
     UPDATE kunity.payment_requests
@@ -807,17 +1004,12 @@ BEGIN
   -- 8. Payment successful -> double-entry ledger
   v_net_amount := v_pr.amount - COALESCE(v_pr.fee, 0);
 
-  -- 8A. Deterministic cash/wallet asset account
-  SELECT id INTO v_cash_account_id
-  FROM kunity.accounts
-  WHERE organization_id = v_pr.organization_id
-    AND account_category = 'asset'
-    AND is_active = true
-  ORDER BY
-    (CASE WHEN is_system THEN 0 ELSE 1 END),
-    (CASE WHEN code ILIKE '%WALLET%' OR code ILIKE '%CASH%' OR name ILIKE '%WALLET%' OR name ILIKE '%MOBILE%' THEN 0 ELSE 1 END),
-    created_at ASC
-  LIMIT 1;
+  -- 8A. FIN-22: deterministic ORGANIZATIONAL cash account (member_id IS
+  --     NULL; self-provisions a system wallet if none exists)
+  v_cash_account_id := kunity._org_system_account(
+    v_pr.organization_id, 'SYS-WALLET-01', 'Organizational Mobile Money Wallet', 'asset',
+    '%WALLET%'
+  );
 
   IF v_cash_account_id IS NULL THEN
     RAISE EXCEPTION 'Missing primary cash/wallet asset account for org %', v_pr.organization_id;
@@ -850,6 +1042,7 @@ BEGIN
     SELECT id INTO v_fee_account_id
     FROM kunity.accounts
     WHERE organization_id = v_pr.organization_id
+      AND member_id IS NULL
       AND account_category IN ('income', 'expense')
       AND is_active = true
       AND is_system = true

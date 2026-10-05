@@ -145,7 +145,6 @@ export async function POST(req: NextRequest) {
 
     // 4. Fetch active wallet from public.wallets strictly scoped to tenant
     let wallet = null;
-    let costPerSms = 50.00;
     const { data: existingWallet, error: fetchWalletErr } = await supabaseAdmin
       .schema('public')
       .from('wallets')
@@ -166,20 +165,35 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (createWalletErr) {
-        return NextResponse.json({ error: 'Failed to auto-provision SACCO SMS wallet.' }, { status: 400 });
+        // FIN-29: a concurrent request may have provisioned the wallet first
+        // (unique tenant) — re-fetch instead of failing the broadcast.
+        const { data: refetched } = await supabaseAdmin
+          .schema('public')
+          .from('wallets')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+        if (!refetched) {
+          return NextResponse.json({ error: 'Failed to auto-provision SACCO SMS wallet.' }, { status: 400 });
+        }
+        wallet = refetched;
+      } else {
+        wallet = newWallet;
       }
-      wallet = newWallet;
-      costPerSms = parseFloat(wallet.sms_rate || 50.00);
     } else {
       wallet = existingWallet;
-      costPerSms = parseFloat(wallet.sms_rate || 50.00);
     }
-    
+
     if (!wallet) {
       return NextResponse.json({
         error: 'Wallet not found for this SACCO. Please contact support to provision a wallet.'
       }, { status: 400 });
     }
+
+    // FIN-28: sanitize the SMS rate — a stored 0/negative/non-finite rate must
+    // never make broadcasts free (or the cost math NaN).
+    const parsedRate = parseFloat(String(wallet.sms_rate ?? ''));
+    const costPerSms = Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : 50.00;
 
     const totalCost = segments * costPerSms * recipients.length;
     const currentBalance = parseFloat(wallet.balance);

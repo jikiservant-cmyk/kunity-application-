@@ -98,6 +98,10 @@ async function seedFixtures(db) {
     INSERT INTO public.wallet_transactions (id, wallet_id, tenant_id, direction, amount, note, reference) VALUES
       ('${TX_B}', '${W_B}', '99999999-0000-0000-0000-000000000002', 'credit', 5000, 'pending', 'topup-b-1');
   `);
+  // loan_repayments only exists after B1b creates it (FIN-01a) / migration 21
+  try {
+    await db.exec('DELETE FROM kunity.loan_repayments;');
+  } catch { /* table not created yet (phase 1, before B1b) */ }
 }
 
 async function seedPaymentRequest(db, ref, type, amount, member = M_ACTIVE) {
@@ -352,24 +356,38 @@ async function phase2_fixes(db) {
   record('F0 FIN-01b: fix migration creates loan_repayments', String(tableExists) === '1', `exists=${tableExists}`);
 
   // --- F1: repayment now works, is balanced, and completes loans
+  //     (FIN-26: only DISBURSED loans are repayable — pending loans rejected)
   await seedFixtures(db);
+  let pendingErr = null;
+  try { await q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 60000)`); }
+  catch (e) { pendingErr = e; }
+  record('F1a FIN-26: repayment rejected on a PENDING (not yet disbursed) loan',
+    !!pendingErr && /not in a repayable state/i.test(pendingErr.message),
+    pendingErr ? pendingErr.message.slice(0, 50) : 'no error');
+
+  await seedFixtures(db);
+  await q(db, `SELECT kunity.disburse_loan_atomic('${LOAN_1}','${ORG}','${M_ACTIVE}', 100000)`);
   const r1 = await one(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 60000) AS r`);
   const bal1 = await scalar(db, `SELECT cached_balance FROM kunity.accounts WHERE id='${ACC_MAIN}'`);
   const e1 = await one(db, `SELECT id FROM kunity.journal_entries ORDER BY created_at DESC LIMIT 1`);
   const paid1 = await scalar(db, `SELECT COALESCE(SUM(principal_paid),0) FROM kunity.loan_repayments WHERE loan_id='${LOAN_1}'`);
+  let overErr = null;
+  try { await q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 60000)`); }
+  catch (e) { overErr = e; }
   const r2 = await one(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 50000) AS r`);
   const loanStatus = await scalar(db, `SELECT status FROM kunity.loans WHERE id='${LOAN_1}'`);
-  let overErr = null;
+  let completedErr = null;
   try { await q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 1000)`); }
-  catch (e) { overErr = e; }
-  record('F1 FIN-01: repayment works end-to-end, balanced, completes loan',
+  catch (e) { completedErr = e; }
+  record('F1b FIN-01: repayment works end-to-end, balanced, completes loan',
     r1.r?.success === true && r2.r?.success === true &&
-    parseFloat(bal1) === 140000 &&
+    parseFloat(bal1) === 240000 &&
     await entryBalanced(db, e1.id) &&
     parseFloat(paid1) === 60000 &&
     loanStatus === 'completed' &&
-    !!overErr && /exceeds remaining/i.test(overErr.message),
-    `balAfter1st=${bal1} loan=${loanStatus} overpayErr=${!!overErr}`);
+    !!overErr && /exceeds remaining/i.test(overErr.message) &&
+    !!completedErr && /not in a repayable state/i.test(completedErr.message),
+    `balAfter1st=${bal1} loan=${loanStatus} overpayErr=${!!overErr} completedErr=${!!completedErr}`);
 
   // --- F2: amount drift rejected (fail closed), correct amount credited, idempotent
   await seedFixtures(db);
@@ -489,17 +507,100 @@ async function phase2_fixes(db) {
     !!frozenErr && !!suspErr && !!negErr,
     `float=${wdFloat} bal=${wdBal} frozen=${!!frozenErr} susp=${!!suspErr} zero=${!!negErr}`);
 
-  // --- F8: disbursement balanced + float decremented
+  // --- F8: disbursement = internal transfer (FIN-20): balanced journal via
+  //     loan receivable, member credited, float UNTOUCHED, NO cash-account line
   await seedFixtures(db);
   const disb = await one(db, `SELECT kunity.disburse_loan_atomic('${LOAN_1}','${ORG}','${M_ACTIVE}', 100000) AS r`);
   const disbEntry = await one(db, `SELECT id FROM kunity.journal_entries ORDER BY created_at DESC LIMIT 1`);
   const disbFloat = await scalar(db, `SELECT balance FROM kunity.sacco_wallets WHERE organization_id='${ORG}'`);
   const disbBal = await scalar(db, `SELECT cached_balance FROM kunity.accounts WHERE id='${ACC_MAIN}'`);
   const disbLoan = await scalar(db, `SELECT status FROM kunity.loans WHERE id='${LOAN_1}'`);
-  record('F8 FIN-04: disbursement balanced, member credited, float decremented',
+  const cashLines = await scalar(db, `SELECT COUNT(*) FROM kunity.journal_lines WHERE journal_entry_id='${disbEntry.id}' AND account_id='${ACC_CASH}'`);
+  const recvLines = await one(db, `SELECT COALESCE(SUM(debit),0) AS d FROM kunity.journal_lines WHERE journal_entry_id='${disbEntry.id}' AND line_type='loan_disbursement' AND member_id IS NULL`);
+  record('F8 FIN-20: disbursement internal — receivable debited, float & cash UNTOUCHED, member credited',
     disb.r?.success === true && await entryBalanced(db, disbEntry.id) &&
-    parseFloat(disbFloat) === 0 && parseFloat(disbBal) === 300000 && disbLoan === 'approved',
-    `float=${disbFloat} bal=${disbBal} loan=${disbLoan}`);
+    parseFloat(disbFloat) === 100000 && parseFloat(disbBal) === 300000 &&
+    disbLoan === 'approved' && String(cashLines) === '0' && parseFloat(recvLines.d) === 100000,
+    `float=${disbFloat} bal=${disbBal} loan=${disbLoan} cashLines=${cashLines} recvDebit=${recvLines.d}`);
+
+  // --- F14: FULL LIFECYCLE invariant — float == external cash only.
+  //     deposit 150k in -> disburse 100k loan (internal) -> withdraw 100k out
+  //     -> repay 110k (internal). Float must equal deposits - withdrawals
+  //     exactly (no double-drain), and the journal's cash-account net must
+  //     equal the float.
+  await seedFixtures(db);
+  await seedPaymentRequest(db, 'ref-life', 'deposit', 150000);
+  await q(db, `SELECT kunity.process_najiki_webhook('ref-life','success',150000,'${M_ACTIVE}','deposit','{}'::jsonb, 0)`);
+  await q(db, `SELECT kunity.disburse_loan_atomic('${LOAN_1}','${ORG}','${M_ACTIVE}', 100000)`);
+  await q(db, `SELECT kunity.member_withdraw_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}', 100000)`);
+  await q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 110000)`);
+  const lifeFloat = await scalar(db, `SELECT balance FROM kunity.sacco_wallets WHERE organization_id='${ORG}'`);
+  const lifeBal = await scalar(db, `SELECT cached_balance FROM kunity.accounts WHERE id='${ACC_MAIN}'`);
+  // cash journal net (debits - credits) + seeded opening float (100000) == float
+  const lifeCashNet = await scalar(db, `SELECT COALESCE(SUM(debit - credit),0) FROM kunity.journal_lines WHERE account_id='${ACC_CASH}'`);
+  const lifeRecvNet = await one(db, `SELECT COALESCE(SUM(debit - credit),0) AS n FROM kunity.journal_lines WHERE member_id IS NULL AND loan_id='${LOAN_1}' AND line_type IN ('loan_disbursement','repayment')`);
+  record('F14 FIN-20/21: lifecycle — float == external cash (no double drain); cash journal == float',
+    parseFloat(lifeFloat) === 150000 &&
+    parseFloat(lifeBal) === 240000 &&
+    parseFloat(lifeCashNet) + 100000 === parseFloat(lifeFloat) &&
+    parseFloat(lifeRecvNet.n) === 0,
+    `float=${lifeFloat} memberBal=${lifeBal} cashNet=${lifeCashNet} recvNet=${lifeRecvNet.n}`);
+
+  // --- F15: repayment journal settles the receivable and recognizes interest
+  //     (loan 100k @10% -> repay 60k then 50k: 40k to receivable + 10k interest)
+  await seedFixtures(db);
+  await q(db, `SELECT kunity.disburse_loan_atomic('${LOAN_1}','${ORG}','${M_ACTIVE}', 100000)`);
+  await q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 60000)`);
+  await q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', 50000)`);
+  const repayCashLines = await scalar(db, `SELECT COUNT(*) FROM kunity.journal_lines WHERE loan_id='${LOAN_1}' AND account_id='${ACC_CASH}'`);
+  const repayInterest = await one(db, `SELECT COALESCE(SUM(credit),0) AS c FROM kunity.journal_lines WHERE loan_id='${LOAN_1}' AND line_type='interest'`);
+  const repayRecv = await one(db, `SELECT COALESCE(SUM(credit),0) AS c FROM kunity.journal_lines WHERE loan_id='${LOAN_1}' AND line_type='repayment' AND member_id IS NULL`);
+  const split = await one(db, `SELECT COALESCE(SUM(principal_paid),0) AS p, COALESCE(SUM(interest_paid),0) AS i FROM kunity.loan_repayments WHERE loan_id='${LOAN_1}'`);
+  record('F15 FIN-21: repayment settles receivable + interest income; NO cash lines',
+    String(repayCashLines) === '0' &&
+    parseFloat(repayInterest.c) === 10000 &&
+    parseFloat(repayRecv.c) === 100000 &&
+    parseFloat(split.p) === 100000 && parseFloat(split.i) === 10000,
+    `cashLines=${repayCashLines} interest=${repayInterest.c} recvSettled=${repayRecv.c} p/i=${split.p}/${split.i}`);
+
+  // --- F16: FIN-22 — org with ONLY member asset accounts: cash pick must
+  //     self-provision a system wallet, NEVER use a member's personal account
+  await seedFixtures(db);
+  await db.exec(`DELETE FROM kunity.accounts WHERE member_id IS NULL;`);
+  await seedPaymentRequest(db, 'ref-noorg', 'deposit', 50000);
+  const noorg = await one(db, `SELECT kunity.process_najiki_webhook('ref-noorg','success',50000,'${M_ACTIVE}','deposit','{}'::jsonb, 0) AS r`);
+  const sysWallet = await one(db, `SELECT id FROM kunity.accounts WHERE member_id IS NULL AND code='SYS-WALLET-01'`);
+  const memberAccUsed = await scalar(db, `SELECT COUNT(*) FROM kunity.journal_lines WHERE account_id IN ('${ACC_MAIN}','${ACC_SUSP}','${ACC_FROZ}') AND line_type='deposit' AND member_id IS NULL`);
+  record('F16 FIN-22: org cash NEVER resolves to a member account (self-provisions system wallet)',
+    /Success recorded/i.test(noorg.r?.message || '') && !!sysWallet &&
+    String(memberAccUsed) === '0',
+    `msg=${noorg.r?.message} sysWallet=${!!sysWallet} memberAccUsedAsCash=${memberAccUsed}`);
+
+  // --- F17: FIN-23 — unknown payment type on success is HELD (fail closed)
+  await seedFixtures(db);
+  await seedPaymentRequest(db, 'ref-unknown', 'mystery_type', 50000);
+  const unknown = await one(db, `SELECT kunity.process_najiki_webhook('ref-unknown','success',50000,'${M_ACTIVE}','mystery_type','{}'::jsonb, 0) AS r`);
+  const unknownStatus = await scalar(db, `SELECT status::text FROM kunity.payment_requests WHERE internal_reference='ref-unknown'`);
+  const unknownJournals = await scalar(db, `SELECT COUNT(*) FROM kunity.journal_entries`);
+  const unknownBal = await scalar(db, `SELECT cached_balance FROM kunity.accounts WHERE id='${ACC_MAIN}'`);
+  record('F17 FIN-23: unknown paymentType HELD (stays pending, nothing recorded, member not credited)',
+    unknown.r?.success === false && /Unrecognized payment type/i.test(unknown.r?.error || '') &&
+    unknownStatus === 'pending' && String(unknownJournals) === '0' && parseFloat(unknownBal) === 200000,
+    `status=${unknownStatus} journals=${unknownJournals} bal=${unknownBal}`);
+
+  // --- F18: FIN-24 — currency mismatch rejected, matching currency accepted
+  await seedFixtures(db);
+  await seedPaymentRequest(db, 'ref-cur', 'deposit', 50000);
+  const curRej = await one(db, `SELECT kunity.process_najiki_webhook('ref-cur','success',50000,'${M_ACTIVE}','deposit','{"currency":"KES"}'::jsonb, 0) AS r`);
+  const curStatus = await scalar(db, `SELECT status::text FROM kunity.payment_requests WHERE internal_reference='ref-cur'`);
+  const curBal = await scalar(db, `SELECT cached_balance FROM kunity.accounts WHERE id='${ACC_MAIN}'`);
+  const curOk = await one(db, `SELECT kunity.process_najiki_webhook('ref-cur','success',50000,'${M_ACTIVE}','deposit','{"currency":"UGX"}'::jsonb, 0) AS r`);
+  const curOkBal = await scalar(db, `SELECT cached_balance FROM kunity.accounts WHERE id='${ACC_MAIN}'`);
+  record('F18 FIN-24: currency mismatch rejected (stays pending); matching currency credits',
+    curRej.r?.success === false && /Currency mismatch/i.test(curRej.r?.error || '') &&
+    curStatus === 'pending' && parseFloat(curBal) === 200000 &&
+    /Success recorded/i.test(curOk.r?.message || '') && parseFloat(curOkBal) === 250000,
+    `mismatchRejected=${curRej.r?.success === false} status=${curStatus} finalBal=${curOkBal}`);
 
   // --- F9: cross-wallet credit refused
   await seedFixtures(db);

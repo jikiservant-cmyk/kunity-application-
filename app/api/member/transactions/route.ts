@@ -122,7 +122,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, result });
 
   } catch (err: any) {
+    // FIN-27: business-rule rejections from the RPCs (RAISE EXCEPTION) are
+    // client errors — return them as 400 with the message, not a 500 that
+    // leaks internals and confuses the member app. Anything else is a genuine
+    // server error: log it and return a generic message.
+    const msg = String(err?.message || '');
+    const businessRule = [
+      'must be greater than zero',
+      'not found',
+      'is not active',
+      'not in a repayable state',
+      'Insufficient funds',
+      'exceeds remaining',
+      'already approved',
+      'Cannot approve',
+      'Disbursement amount mismatch',
+    ].some((pat) => msg.includes(pat));
+
+    if (businessRule) {
+      return NextResponse.json({ error: msg }, { status: 400 });
+    }
+
     console.error(`Error in /api/member/transactions:`, err);
-    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

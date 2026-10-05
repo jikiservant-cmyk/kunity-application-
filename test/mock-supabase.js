@@ -22,6 +22,7 @@ const U_ADMIN_A      = '11111111-1111-1111-1111-111111111111'; // sacco_admin of
 const U_ADMIN_NULL   = '22222222-2222-2222-2222-222222222222'; // sacco_admin, tenant NULL, PENDING member of ORG_B
 const U_ADMIN_FOUND  = '33333333-3333-3333-3333-333333333333'; // sacco_admin, tenant NULL, owns ORG_A, PENDING member of ORG_B
 const U_ADMIN_ACT    = '44444444-4444-4444-4444-444444444444'; // sacco_admin, tenant NULL, ACTIVE member of ORG_B
+const U_MEMBER_RATE  = '66666666-6666-6666-6666-666666666666'; // rate-limit probe member of ORG_B
 const U_MEMBER_B     = '55555555-5555-5555-5555-555555555555'; // plain member of ORG_B
 const U_SUPER        = '66666666-6666-6666-6666-666666666666'; // super_admin (global)
 const U_VIEWER       = '77777777-7777-7777-7777-777777777777'; // admin_profiles row with role 'viewer' (low-priv)
@@ -53,6 +54,10 @@ const USERS = {
     id: U_MEMBER_B, email: 'benny@bravo.sacco', aud: 'authenticated',
     user_metadata: { full_name: 'Benny Member', role: 'member' },
   },
+  'token-member-rate': {
+    id: U_MEMBER_RATE, email: 'ratel@bravo.sacco', aud: 'authenticated',
+    user_metadata: { full_name: 'Rate Limit Probe', role: 'member' },
+  },
   'token-super': {
     id: U_SUPER, email: 'root@kunity.platform', aud: 'authenticated',
     user_metadata: { full_name: 'Platform Super Admin' },
@@ -80,7 +85,8 @@ function freshDb() {
       { id: U_ADMIN_NULL, organization_id: ORG_B, status: 'pending', first_name: 'NullTenant', last_name: 'Attacker', phone: '+256700000002', accounts: [] },
       { id: U_ADMIN_FOUND, organization_id: ORG_B, status: 'pending', first_name: 'Founder', last_name: 'Admin', phone: null, accounts: [] },
       { id: U_ADMIN_ACT, organization_id: ORG_B, status: 'active', first_name: 'Promoted', last_name: 'Member', phone: '+256700000004', accounts: [] },
-      { id: U_MEMBER_B, organization_id: ORG_B, status: 'active', first_name: 'Benny', last_name: 'Member', phone: '+256700000005', accounts: [{ id: 'acc-b-1', cached_balance: '80000', is_active: true, code: 'WAL-B1', name: 'Benny Wallet' }] },
+      { id: U_MEMBER_B, organization_id: ORG_B, status: 'active', first_name: 'Benny', last_name: 'Member', phone: '+256700000005', accounts: [{ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', cached_balance: '80000', is_active: true, code: 'WAL-B1', name: 'Benny Wallet' }] },
+      { id: U_MEMBER_RATE, organization_id: ORG_B, status: 'active', first_name: 'Rate', last_name: 'Probe', phone: '+256700000009', accounts: [{ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', cached_balance: '1000000', is_active: true, code: 'WAL-R1', name: 'Rate Wallet' }] },
     ],
     'kunity.organizations': [
       { id: ORG_A, name: 'Sacco Alpha', code: 'ALPHA', is_active: true, created_by: U_ADMIN_FOUND, currency: 'UGX', primary_color: '#123456' },
@@ -102,6 +108,8 @@ function freshDb() {
     'public.wallet_transactions': [
       { id: 'wt-b-1', wallet_id: 'wallet-b', tenant_id: ORG_B, amount: '50000', note: 'pending', status: null, reference: 'najiki_ref_success', direction: 'credit', currency: 'UGX', type: 'sms_topup', description: 'Pending SMS topup via Mobile Money' },
       { id: 'wt-a-1', wallet_id: 'wallet-a', tenant_id: ORG_A, amount: '20000', note: 'pending', status: null, reference: 'najiki_ref_a', direction: 'credit', currency: 'UGX', type: 'sms_topup', description: 'Pending SMS topup via Mobile Money' },
+      { id: 'wt-a-nan', wallet_id: 'wallet-a', tenant_id: ORG_A, amount: '50000', note: 'pending', status: null, reference: 'najiki_ref_nan', direction: 'credit', currency: 'UGX', type: 'sms_topup', description: 'Pending SMS topup via Mobile Money' },
+      { id: 'wt-a-str', wallet_id: 'wallet-a', tenant_id: ORG_A, amount: '50000.00', note: 'pending', status: null, reference: 'najiki_ref_str', direction: 'credit', currency: 'UGX', type: 'sms_topup', description: 'Pending SMS topup via Mobile Money' },
     ],
     'kunity.payment_requests': [
       { id: 'pr-1', internal_reference: 'najiki_ref_success', member_id: U_MEMBER_B, organization_id: ORG_B, amount: '20000', status: 'pending', currency: 'UGX', phone_number: '+256700000005', payment_type: 'deposit', provider: 'najiki' },
@@ -114,6 +122,9 @@ function freshDb() {
     'kunity.loans': [
       { id: 'loan-b-1', organization_id: ORG_B, member_id: U_MEMBER_B, principal: '1000000', status: 'pending' },
       { id: 'loan-a-1', organization_id: ORG_A, member_id: U_ADMIN_ACT, principal: '50000', status: 'pending' },
+      // UUID-shaped loans for the member repay endpoint (route validates UUID format)
+      { id: 'bbbbbb1b-0000-4000-8000-000000000001', organization_id: ORG_B, member_id: U_MEMBER_B, principal: '100000', status: 'pending' },     // Benny, NOT yet disbursed
+      { id: 'aaaaaa1a-0000-4000-8000-000000000002', organization_id: ORG_A, member_id: U_ADMIN_ACT, principal: '50000', status: 'approved' },   // FOREIGN org's loan
     ],
     'kunity.member_savings': [],
     'kunity.accounts': [],
@@ -251,6 +262,10 @@ const server = http.createServer(async (req, res) => {
       const id = path.split('/').pop();
       if (id === 'najiki_ref_success') return json(res, 200, { status: 'success', amount: 50000, reference: id });
       if (id === 'najiki_ref_a') return json(res, 200, { status: 'success', amount: 20000, reference: id });
+      // FIN-25: gateway returns a missing/garbage amount field
+      if (id === 'najiki_ref_nan') return json(res, 200, { status: 'success', amount: null, reference: id });
+      // FIN-12: gateway returns the amount as a formatted string
+      if (id === 'najiki_ref_str') return json(res, 200, { status: 'success', amount: '50000.00', reference: id });
       return json(res, 200, { status: 'pending', amount: 0, reference: id });
     }
 
@@ -278,6 +293,37 @@ const server = http.createServer(async (req, res) => {
       }
       if (fn === 'disburse_loan_atomic') {
         return json(res, 200, { message: 'Loan disbursed atomically', organization_id: body.p_organization_id });
+      }
+      // Emulate the REAL contract of 21_financial_integrity.sql:
+      // identity is server-supplied and ownership/eligibility is enforced.
+      if (fn === 'member_withdraw_atomic') {
+        const m = db['kunity.members'].find(x => x.id === body.p_member_id && x.organization_id === body.p_organization_id);
+        if (!m) return json(res, 400, { code: 'P0001', message: 'Member not found in this organization' });
+        if (m.status !== 'active') return json(res, 400, { code: 'P0001', message: 'Membership is not active (status: ' + m.status + ')' });
+        const acc = (m.accounts || []).find(a => a.id === body.p_account_id);
+        if (!acc) return json(res, 400, { code: 'P0001', message: 'Account not found' });
+        if (acc.is_active === false) return json(res, 400, { code: 'P0001', message: 'Account is not active' });
+        if (Number(body.p_amount) <= 0) return json(res, 400, { code: 'P0001', message: 'Withdrawal amount must be greater than zero' });
+        if (parseFloat(acc.cached_balance || 0) < Number(body.p_amount)) return json(res, 400, { code: 'P0001', message: 'Insufficient funds' });
+        acc.cached_balance = String(parseFloat(acc.cached_balance || 0) - Number(body.p_amount));
+        return json(res, 200, { success: true, new_balance: acc.cached_balance });
+      }
+      if (fn === 'member_repay_loan_atomic') {
+        const m = db['kunity.members'].find(x => x.id === body.p_member_id && x.organization_id === body.p_organization_id);
+        if (!m) return json(res, 400, { code: 'P0001', message: 'Member not found in this organization' });
+        if (m.status !== 'active') return json(res, 400, { code: 'P0001', message: 'Membership is not active (status: ' + m.status + ')' });
+        const loan = db['kunity.loans'].find(l => l.id === body.p_loan_id);
+        if (!loan || loan.member_id !== body.p_member_id || loan.organization_id !== body.p_organization_id) {
+          return json(res, 400, { code: 'P0001', message: 'Loan not found' });
+        }
+        if (loan.status !== 'approved') return json(res, 400, { code: 'P0001', message: 'Loan is not in a repayable state (status: ' + loan.status + ')' });
+        return json(res, 200, { success: true });
+      }
+      if (fn === 'member_apply_loan') {
+        const m = db['kunity.members'].find(x => x.id === body.p_member_id && x.organization_id === body.p_organization_id);
+        if (!m) return json(res, 400, { code: 'P0001', message: 'Member not found in this organization' });
+        if (m.status !== 'active') return json(res, 400, { code: 'P0001', message: 'Membership is not active (status: ' + m.status + ')' });
+        return json(res, 200, { success: true, loan_id: 'mock-loan-new' });
       }
       return json(res, 200, { ok: true, fn });
     }

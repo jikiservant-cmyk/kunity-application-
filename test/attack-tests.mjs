@@ -310,6 +310,97 @@ async function runFixedVerification() {
 }
 
 // ===========================================================================
+async function runFinancialAttacks() {
+  console.log('\n══════════════════════════════════════════════════════');
+  console.log('FINANCIAL ATTACKS — member money movement + topup @ :3000');
+  console.log('══════════════════════════════════════════════════════');
+  await mockReset();
+  let r;
+  let st;
+
+  const ACC_BENNY = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+  // T26: spoofed memberId in the body must be IGNORED — identity comes from
+  //     the session and is resolved server-side before the RPC runs
+  r = await call(NEW, {
+    path: '/api/member/transactions', token: 'token-member-b',
+    body: { action: 'withdraw', amount: 1000, accountId: ACC_BENNY, memberId: '11111111-1111-1111-1111-111111111111' },
+  });
+  st = await mockState();
+  const wdRpc = st.requestLog.filter(e => e.method === 'RPC' && e.path.includes('member_withdraw_atomic')).pop();
+  record('T26 identity: withdraw uses SESSION identity, spoofed memberId ignored',
+    r.status === 200 && wdRpc && wdRpc.body.p_member_id === '55555555-5555-5555-5555-555555555555' &&
+    wdRpc.body.p_organization_id === ORG_B && wdRpc.body.p_account_id === ACC_BENNY,
+    `status=${r.status} rpcMember=${wdRpc && wdRpc.body.p_member_id}`);
+
+  // T27: amount validation — string, negative, zero, boolean all rejected
+  r = await call(NEW, { path: '/api/member/transactions', token: 'token-member-b', body: { action: 'withdraw', amount: '1000', accountId: ACC_BENNY } });
+  const r2 = await call(NEW, { path: '/api/member/transactions', token: 'token-member-b', body: { action: 'withdraw', amount: -5, accountId: ACC_BENNY } });
+  const r3 = await call(NEW, { path: '/api/member/transactions', token: 'token-member-b', body: { action: 'withdraw', amount: 0, accountId: ACC_BENNY } });
+  const r4 = await call(NEW, { path: '/api/member/transactions', token: 'token-member-b', body: { action: 'loan', amount: '1e9' } });
+  record('T27 validation: string/negative/zero amounts rejected with 400',
+    r.status === 400 && r2.status === 400 && r3.status === 400 && r4.status === 400,
+    `str=${r.status} neg=${r2.status} zero=${r3.status} exp=${r4.status}`);
+
+  // T28: malformed accountId (injection string) rejected before any DB call
+  await mockReset();
+  r = await call(NEW, { path: '/api/member/transactions', token: 'token-member-b', body: { action: 'withdraw', amount: 1000, accountId: "../../etc/passwd" } });
+  st = await mockState();
+  const dbCalls = st.requestLog.filter(e => e.method === 'RPC' || (e.method === 'GET' && e.path.includes('/rest/v1/members'))).length;
+  record('T28 validation: injection-style accountId rejected, no RPC fired',
+    r.status === 400 && dbCalls === 0, `status=${r.status} dbCalls=${dbCalls}`);
+
+  // T29: repay a FOREIGN org's loan -> ownership enforced (emulated RPC contract)
+  r = await call(NEW, {
+    path: '/api/member/transactions', token: 'token-member-b',
+    body: { action: 'repay', amount: 5000, accountId: ACC_BENNY, loanId: 'aaaaaa1a-0000-4000-8000-000000000002' },
+  });
+  record('T29 ownership: repaying a FOREIGN member\'s loan rejected (400, not 500)',
+    r.status === 400 && /Loan not found/i.test(r.json?.error || ''),
+    `status=${r.status} err=${r.json && r.json.error}`);
+
+  // T29b: repay own loan that is still PENDING (not disbursed) -> rejected
+  r = await call(NEW, {
+    path: '/api/member/transactions', token: 'token-member-b',
+    body: { action: 'repay', amount: 5000, accountId: ACC_BENNY, loanId: 'bbbbbb1b-0000-4000-8000-000000000001' },
+  });
+  record('T29b FIN-26: repaying a not-yet-disbursed loan rejected (400)',
+    r.status === 400 && /not in a repayable state/i.test(r.json?.error || ''),
+    `status=${r.status} err=${r.json && r.json.error}`);
+
+  // T30: rate limit — 31 rapid money-movement requests, the 31st is throttled
+  let lastStatus = null;
+  for (let i = 0; i < 31; i++) {
+    const rr = await call(NEW, {
+      path: '/api/member/transactions', token: 'token-member-rate',
+      body: { action: 'withdraw', amount: 1, accountId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' },
+    });
+    lastStatus = rr.status;
+  }
+  record('T30 FIN-16: member transaction rate limit fires (429 after 30/min)',
+    lastStatus === 429, `31stStatus=${lastStatus}`);
+
+  // T31: FIN-25 — gateway returns success with a MISSING amount field;
+  //     confirm must not credit (NaN used to slip past the tolerance check)
+  await mockReset();
+  r = await call(NEW, { path: '/api/admin/sms/topup/confirm', token: 'token-admin-a', body: { token: 'token-admin-a', intentId: 'najiki_ref_nan', credits: 1000 } });
+  st = await mockState();
+  const nanWallet = st.db['public.wallets'].find(w => w.id === 'wallet-a');
+  const nanCreditCalls = st.requestLog.filter(e => e.method === 'RPC' && e.path.includes('credit_sms_wallet')).length;
+  record('T31 FIN-25: NaN/missing gateway amount rejected, wallet NOT credited',
+    r.status === 400 && nanCreditCalls === 0 && parseFloat(nanWallet.balance) === 10000,
+    `status=${r.status} wallet=${nanWallet.balance} creditCalls=${nanCreditCalls}`);
+
+  // T32: FIN-12 no-regression — gateway amount as STRING still confirms fine
+  r = await call(NEW, { path: '/api/admin/sms/topup/confirm', token: 'token-admin-a', body: { token: 'token-admin-a', intentId: 'najiki_ref_str', credits: 1000 } });
+  st = await mockState();
+  const strWallet = st.db['public.wallets'].find(w => w.id === 'wallet-a');
+  record('T32 no-regression: string amount "50000.00" still credited',
+    r.status === 200 && parseFloat(strWallet.balance) === 60000,
+    `status=${r.status} wallet=${strWallet.balance}`);
+}
+
+// ===========================================================================
 (async () => {
   await waitReady(MOCK, 'mock');
   await waitReady(NEW, 'fixed-server');
@@ -317,6 +408,7 @@ async function runFixedVerification() {
 
   await runPositiveControls();
   await runFixedVerification();
+  await runFinancialAttacks();
 
   const failed = results.filter(r => !r.pass);
   console.log('\n══════════════════════════════════════════════════════');

@@ -133,7 +133,19 @@ export async function sendSms({
         .maybeSingle();
 
       if (createWalletErr) {
-        console.error('[SMS Service] Error provisioning default wallet:', createWalletErr);
+        // FIN-29: a concurrent request may have provisioned the wallet first
+        // (unique tenant) — re-fetch instead of failing the dispatch.
+        const { data: refetched } = await supabaseAdmin
+          .schema('public')
+          .from('wallets')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+        if (refetched) {
+          wallet = refetched;
+        } else {
+          console.error('[SMS Service] Error provisioning default wallet:', createWalletErr);
+        }
       } else {
         wallet = newWallet;
       }
@@ -141,7 +153,12 @@ export async function sendSms({
       wallet = existingWallet;
     }
 
-    let totalCost = segments * (wallet?.sms_rate ? parseFloat(wallet.sms_rate) : defaultCostPerSms);
+    // FIN-28: sanitize the wallet's SMS rate — a stored 0, negative, or
+    // non-finite rate must never make messages free (or the cost math NaN).
+    // `wallet.sms_rate ? ...` alone passes "0" through (truthy string).
+    const parsedRate = parseFloat(String(wallet?.sms_rate ?? ''));
+    const effectiveRate = Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : defaultCostPerSms;
+    let totalCost = segments * effectiveRate;
     const currentBalance = wallet ? parseFloat(wallet.balance) : 0;
     const finalBalance = currentBalance - totalCost;
 

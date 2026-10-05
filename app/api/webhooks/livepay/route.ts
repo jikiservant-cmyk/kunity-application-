@@ -15,14 +15,12 @@ function getSupabaseAdmin() {
 function verifyLivePaySignature(rawBody: string, signatureHeader: string | null): boolean {
   const webhookSecret = process.env.LIVEPAY_SECRET_KEY;
   
-  // Security Guard: fail closed in production or whenever insecure mode is not explicitly enabled
+  // Security Guard: fail closed. FIN-30: the previous version contained an
+  // unreachable fail-open branch after this check — removed so it can never be
+  // re-enabled by accident. Without the secret, webhooks are REJECTED.
   if (!webhookSecret || webhookSecret === 'YOUR_LIVEPAY_SECRET_KEY') {
-    if (true) {
-      console.error('[LivePay Webhook] ERROR: LIVEPAY_SECRET_KEY not configured. Webhook rejected for security.');
-      return false;
-    }
-    console.warn('[LivePay Webhook] WARNING: Webhook secret not configured - skipping signature verification (DEV ONLY)!');
-    return true;
+    console.error('[LivePay Webhook] ERROR: LIVEPAY_SECRET_KEY not configured. Webhook rejected for security.');
+    return false;
   }
 
   if (!signatureHeader) {

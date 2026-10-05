@@ -33,7 +33,7 @@ ln -s "$PWD/node_modules" ../kunity-orig/node_modules
 cp .env.local ../kunity-orig/.env.local
 (cd ../kunity-orig && npx next dev -p 3001 -H 0.0.0.0) &
 
-# 4. run the suite (37 checks)
+# 4. run the suite (45 checks: 37 auth + 8 financial attacks)
 node test/attack-tests.mjs
 ```
 
@@ -66,11 +66,13 @@ no Docker needed) and proves both halves of the financial-integrity work:
   FIN-01 … FIN-19 live: broken repayment SQL, amount-drift acceptance,
   vanishing activation money, unbalanced journals, negative SMS wallets,
   dead wallet RPCs, cross-wallet credits, …
-- **Phase 2 (16 checks)** — applies `supabase/migrations/21_financial_integrity.sql`
-  and verifies every fix: balanced double-entry journals, sacco float maintained,
-  member balances credited, drift fail-closed, idempotent replays, eligibility
-  guards, funds checks, and schema-type agnosticism (enum/text status columns,
-  uuid/text wallet ids).
+- **Phase 2 (22 checks)** — applies `supabase/migrations/21_financial_integrity.sql`
+  and verifies every fix: balanced double-entry journals, float maintained on
+  EXTERNAL cash movements only (loans are internal transfers via the
+  receivable account), member balances credited, drift/currency fail-closed,
+  unknown payment types held, idempotent replays, eligibility + funds checks,
+  org accounts never resolving to member wallets, and schema-type agnosticism
+  (enum/text status columns, uuid/text wallet ids).
 
 ## Running
 

@@ -157,6 +157,21 @@ export async function POST(req: Request) {
     }
     const finalOrganizationId = resolvedOrgId;
 
+    // FIN-23 (source): the stored payment type is later trusted by the webhook
+    // RPC's whitelist. Only the types the member app actually uses are allowed
+    // for member callers; unknown types would be held for review at webhook
+    // time anyway — reject them here with a clear error.
+    const requestedType = (paymentTypeCode || 'account_activation').trim();
+    const isMemberCaller = !!callerMember?.organization_id;
+    const memberAllowedTypes = ['deposit', 'account_activation'];
+    if (isMemberCaller && !memberAllowedTypes.includes(requestedType)) {
+      return NextResponse.json(
+        { error: `Invalid paymentTypeCode. Allowed: ${memberAllowedTypes.join(', ')}` },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+    // Admin BUY_SMS topups keep their own type (credited via wallet_transactions).
+
     // Fetch tenant code from public.tenants
     let tenantCode = finalOrganizationId;
     {
