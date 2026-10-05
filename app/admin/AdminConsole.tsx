@@ -230,9 +230,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const res = await fetch('/api/admin/members', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
         body: JSON.stringify({
-          token: session.access_token,
           memberId,
           action,
           organizationId: orgId
@@ -324,9 +326,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const res = await fetch('/api/admin/sms/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
         body: JSON.stringify({
-          token: session.access_token,
           recipients,
           message: smsMessageText,
           organizationId: orgId
@@ -362,9 +366,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const res = await fetch('/api/admin/sms/topup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
         body: JSON.stringify({
-          token: session.access_token,
           amount: selectedPack.price,
           momoNumber: momoNumber,
           credits: selectedPack.credits,

@@ -1,4 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js';
+import { ELEVATED_ADMIN_ROLES, GLOBAL_ADMIN_ROLES } from '@/lib/roles';
 
 export interface AdminAuthResult {
   user: {
@@ -39,12 +40,13 @@ export async function verifyAdminAndTenant(
     return { error: 'Forbidden: Admin profile not found for caller', status: 403 };
   }
 
-  const allowedRoles = ['sacco_admin', 'super_admin', 'system_admin'];
-  if (!allowedRoles.includes(adminProfile.role)) {
+  // Allowed roles come from the shared, authoritative constant (lib/roles.ts).
+  // Never add client-writable sources (e.g. user_metadata.role) here.
+  if (!ELEVATED_ADMIN_ROLES.includes(adminProfile.role)) {
     return { error: 'Forbidden: Elevated administrator permissions required', status: 403 };
   }
 
-  const isGlobalAdmin = ['super_admin', 'system_admin'].includes(adminProfile.role);
+  const isGlobalAdmin = GLOBAL_ADMIN_ROLES.includes(adminProfile.role);
 
   return {
     auth: {

@@ -73,6 +73,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ## Security Best Practices
 
 1. **Never expose `SUPABASE_SERVICE_ROLE_KEY` or `LIVEPAY_SECRET_KEY` on the client.** All financial actions and webhook handlers run strictly server-side in `app/api/*`.
-2. **Strict RBAC**: Admin actions require roles in `sacco_admin`, `super_admin`, `system_admin`, or `admin`.
-3. **Cross-Tenant Guard**: Admins cannot approve loans or members outside their assigned tenant unless possessing global `super_admin` privileges.
+2. **Strict RBAC**: Admin actions require elevated roles (`sacco_admin`, `super_admin`, `system_admin`) defined once in `lib/roles.ts`. Roles are read exclusively from the server-controlled `public.admin_profiles` table — never from client-writable `user_metadata`.
+3. **Cross-Tenant Guard**: Admins cannot approve loans or members outside their assigned tenant unless possessing global admin privileges. Tenant bindings resolve only from server-authoritative sources (`admin_profiles`, `members`, `organizations.created_by`).
 4. **Idempotency & Replay Protection**: Loan disbursements check for `pending` status and perform atomic check-and-set updates before crediting balances.
+5. **CSRF Protection**: Cookie-authenticated state-changing endpoints enforce same-origin verification (`lib/request-guard.ts`) because session cookies use `SameSite=None` for iframe embedding.
+6. **Session tokens travel only in `Authorization: Bearer` headers** — never in request bodies.
+7. **Member money-movement endpoints** require an `active` member status at both the API layer and inside the database RPCs (`supabase/migrations/21_auth_integrity_hardening.sql`), and are rate limited.
+
+See `SECURITY_AUDIT.md` for the full authentication penetration test report and the pre-launch checklist.

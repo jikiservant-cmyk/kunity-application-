@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { memberAccountLimiter } from '@/lib/rate-limit';
+import { isSameOriginRequest, rejectCrossSiteRequest, isUuid } from '@/lib/request-guard';
 
 export async function POST(req: NextRequest) {
   try {
+    // SECURITY (CSRF guard): cookie-authenticated, state-changing endpoint.
+    if (!isSameOriginRequest(req)) {
+      return rejectCrossSiteRequest();
+    }
+
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
@@ -25,6 +32,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    // Rate limit savings-account opening per member.
+    try {
+      await memberAccountLimiter.check(20, `member:open-account:${user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Too many account requests. Please wait a moment before trying again.' }, { status: 429 });
+    }
+
     const supabaseAdminLocal = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
@@ -32,7 +46,7 @@ export async function POST(req: NextRequest) {
     const { data: member, error: memberErr } = await supabaseAdminLocal
       .schema('kunity')
       .from('members')
-      .select('id, organization_id')
+      .select('id, organization_id, status')
       .eq('id', user.id)
       .maybeSingle();
 
@@ -40,11 +54,42 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Member profile not found' }, { status: 403 });
     }
 
+    // Rejected or suspended members may not open savings accounts.
+    if (member.status === 'rejected' || member.status === 'suspended') {
+      return NextResponse.json(
+        { error: `Account is ${member.status}. Contact your SACCO administrator.` },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json();
     const { productId, productName } = body;
 
     if (!productId) {
       return NextResponse.json({ error: 'productId is required' }, { status: 400 });
+    }
+
+    if (!isUuid(productId)) {
+      return NextResponse.json({ error: 'Invalid productId format' }, { status: 400 });
+    }
+
+    // SECURITY (cross-tenant guard): The savings product must exist AND
+    // belong to the caller's own SACCO organization. Without this check a
+    // member could attach a savings account to a product of a different
+    // tenant, polluting foreign-tenant data.
+    const { data: product } = await supabaseAdminLocal
+      .schema('kunity')
+      .from('savings_products')
+      .select('id, organization_id, is_active')
+      .eq('id', productId)
+      .maybeSingle();
+
+    if (!product || product.organization_id !== member.organization_id) {
+      return NextResponse.json({ error: 'Savings product not found in your cooperative' }, { status: 404 });
+    }
+
+    if (product.is_active === false) {
+      return NextResponse.json({ error: 'This savings product is not currently available' }, { status: 403 });
     }
 
     const { data: existingMs } = await supabaseAdminLocal.schema('kunity')

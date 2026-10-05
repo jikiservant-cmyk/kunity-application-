@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant, assertTenantMatch } from '@/lib/admin-auth';
 import { memberActionLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
+import { extractBearerToken } from '@/lib/request-guard';
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,10 +19,14 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, memberId, action, reason, organizationId } = body;
+    const { memberId, action, reason, organizationId } = body;
+
+    // SECURITY: Token comes exclusively from the Authorization header —
+    // never from the JSON body (log-leakage prevention).
+    const token = extractBearerToken(req);
 
     if (!token || !memberId || !action) {
-      return NextResponse.json({ error: 'Missing required parameters (token, memberId, action)' }, { status: 400 });
+      return NextResponse.json({ error: 'Missing required parameters (Authorization, memberId, action)' }, { status: 400 });
     }
 
     // 1. Verify Admin Authentication & Tenant

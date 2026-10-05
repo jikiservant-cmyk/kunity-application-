@@ -3,8 +3,17 @@
 import { useState, Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { ELEVATED_ADMIN_ROLES } from '@/lib/roles';
 import { Wallet, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+
+/**
+ * Client-side password policy (mirrored by Supabase project settings).
+ * Financial accounts require at least 8 characters with letters and digits.
+ */
+function isStrongPassword(pw: string): boolean {
+  return typeof pw === 'string' && pw.length >= 8 && /[a-zA-Z]/.test(pw) && /[0-9]/.test(pw);
+}
 
 function AuthContent() {
   const router = useRouter();
@@ -82,6 +91,12 @@ function AuthContent() {
         const nationalIdRegex = /^(CM|CF|RM|RF)[A-Z0-9]{12}$/i;
 
         if (step === 1) {
+          // Enforce password strength before collecting further details
+          if (!isStrongPassword(password)) {
+            setError("Password must be at least 8 characters long and contain both letters and numbers.");
+            setLoading(false);
+            return;
+          }
           // Validate phone number to be 10 digits starting with 0
           if (!phoneRegex.test(phone.trim())) {
             setError("Phone Number must be exactly 10 digits starting with 0 (e.g., 0772123456) for Ugandan networks.");
@@ -199,27 +214,29 @@ function AuthContent() {
         if (signInError) throw signInError;
         
         if (data.user) {
-          // Fetch the actual role to redirect cleanly
+          // Determine the redirect target from the AUTHORITATIVE role stored
+          // in public.admin_profiles (RLS restricts reads to the caller's own
+          // row). user_metadata is client-writable and is never trusted here;
+          // this matches the server-side middleware enforcement exactly.
           let isSaccoAdmin = false;
-          let role = data.user.user_metadata?.role;
-          
-          if (!role) {
-            try {
-              const { data: profile } = await supabase
-                .schema('public')
-                .from('admin_profiles')
-                .select('role')
-                .eq('id', data.user.id)
-                .maybeSingle();
-              
-              role = profile?.role;
-            } catch (profileErr) {
-              console.warn("⚠️ Failed to fetch profile role on login:", profileErr);
-            }
+
+          try {
+            const { data: profile } = await supabase
+              .schema('public')
+              .from('admin_profiles')
+              .select('role')
+              .eq('id', data.user.id)
+              .maybeSingle();
+            
+            const role = profile?.role || 'member';
+            isSaccoAdmin = (ELEVATED_ADMIN_ROLES as readonly string[]).includes(role);
+          } catch (profileErr) {
+            console.warn("⚠️ Failed to fetch profile role on login:", profileErr);
+            // Fail safe: unknown role is treated as a regular member. The
+            // middleware performs the same authoritative check and will
+            // bounce any admin away from /member if this lookup failed.
+            isSaccoAdmin = false;
           }
-          
-          role = role || 'member';
-          isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin', 'admin'].includes(role);
 
           await supabase.auth.refreshSession();
           router.refresh();

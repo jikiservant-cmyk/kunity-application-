@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from "@supabase/ssr";
 import { logAudit } from '@/lib/audit-logger';
+import { verifyAdminAndTenant } from '@/lib/admin-auth';
+import { topupConfirmLimiter } from '@/lib/rate-limit';
+import { extractBearerToken } from '@/lib/request-guard';
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,26 +18,38 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, intentId, momoNumber, credits } = body;
+    const { intentId, momoNumber, credits } = body;
+
+    // SECURITY: Token comes exclusively from the Authorization header.
+    const token = extractBearerToken(req);
 
     if (!token || !intentId) {
-      return NextResponse.json({ error: 'Missing token or intentId' }, { status: 400 });
+      return NextResponse.json({ error: 'Missing Authorization Bearer token or intentId' }, { status: 400 });
     }
 
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized: Invalid token' }, { status: 401 });
+    // SECURITY: Full admin verification (role + tenant binding) is mandatory
+    // before any wallet crediting operation. Previously this endpoint only
+    // checked that an admin_profiles row existed — without a role check —
+    // allowing any authenticated user with a profile row to trigger the
+    // wallet-credit flow.
+    const authResult = await verifyAdminAndTenant(supabaseAdmin, token);
+    if (authResult.error || !authResult.auth) {
+      return NextResponse.json({ error: authResult.error }, { status: authResult.status });
+    }
+    const adminAuth = authResult.auth;
+    const user = adminAuth.user;
+
+    // Rate limit topup confirmations per administrator
+    try {
+      await topupConfirmLimiter.check(15, `admin:topup-confirm:${user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Too many topup confirmation attempts. Please wait a moment.' }, { status: 429 });
     }
 
-    const { data: adminProfile } = await supabaseAdmin
-      .from('admin_profiles')
-      .select('tenant_id')
-      .eq('id', user.id)
-      .maybeSingle();
-
-    const tenantId = adminProfile?.tenant_id;
+    // Tenant binding comes from the verified admin profile (server-authoritative).
+    const tenantId = adminAuth.tenantId;
     if (!tenantId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 400 });
+      return NextResponse.json({ error: 'Unauthorized: Admin is not associated with any tenant' }, { status: 400 });
     }
 
     // Safe parameter lookup avoiding string interpolation in .or()

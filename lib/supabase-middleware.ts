@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isElevatedAdminRole } from "@/lib/roles";
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -138,8 +139,8 @@ export async function updateSession(request: NextRequest) {
     }
     
     role = role || 'member';
-    const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin'].includes(role);
-    const isMember = role === 'member' || !isSaccoAdmin;
+    const isSaccoAdmin = isElevatedAdminRole(role);
+    const isMember = !isSaccoAdmin;
 
     if (isAuthPage) {
       // Don't let logged-in users see the auth page
