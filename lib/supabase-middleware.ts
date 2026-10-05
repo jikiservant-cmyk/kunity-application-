@@ -61,13 +61,51 @@ export async function updateSession(request: NextRequest) {
     error: authError,
   } = await supabase.auth.getUser();
 
+  // SECURITY (API integrity): API endpoints must never receive an HTML login
+  // redirect. Anonymous or expired-session API calls get a proper 401 JSON,
+  // and requests that carry an Authorization header are passed through so the
+  // route can authenticate the Bearer session / gateway API key itself.
+  // (Note: supabase-js reports a missing session as status 400, which
+  // previously triggered the login-page redirect even for public API routes.)
+  const isApiRequest = request.nextUrl.pathname.startsWith('/api/');
+  const hasAuthorizationHeader = !!request.headers.get('authorization');
+
   if (authError) {
     if (!authError.message?.includes('Auth session missing!')) {
       console.warn("[Middleware] Auth token check warning:", authError.message);
     }
-    
-    if (authError.message?.includes('Refresh Token') || authError.status === 400 || authError.status === 401) {
-      if (!request.nextUrl.pathname.startsWith('/auth')) {
+
+    const sessionInvalid =
+      authError.message?.includes('Refresh Token') ||
+      authError.status === 400 ||
+      authError.status === 401;
+
+    if (sessionInvalid) {
+      if (isApiRequest) {
+        if (!hasAuthorizationHeader) {
+          const unauthorized = NextResponse.json(
+            { error: 'Unauthorized: Session missing, expired, or invalid' },
+            { status: 401 }
+          );
+          request.cookies.getAll().forEach(cookie => {
+            if (cookie.name.startsWith('sb-')) {
+              const cookieOpts: any = {
+                path: '/',
+                maxAge: 0,
+                sameSite: isLocalhost ? 'lax' : 'none',
+                secure: !isLocalhost
+              };
+              if (!isLocalhost) {
+                cookieOpts.partitioned = true;
+              }
+              unauthorized.cookies.set(cookie.name, '', cookieOpts);
+            }
+          });
+          return unauthorized;
+        }
+        // Authorization header present: the route performs its own
+        // cryptographic authentication. Fall through without redirecting.
+      } else if (!request.nextUrl.pathname.startsWith('/auth')) {
         const url = request.nextUrl.clone();
         url.pathname = '/auth';
         const redirectResponse = NextResponse.redirect(url);

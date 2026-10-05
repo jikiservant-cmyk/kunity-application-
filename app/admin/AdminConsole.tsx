@@ -179,10 +179,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const res = await fetch('/api/admin/data', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          token: session.access_token
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({})
       });
 
       const data = await res.json();
@@ -267,9 +268,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const res = await fetch('/api/admin/loans', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
         body: JSON.stringify({
-          token: session.access_token,
           loanId,
           status,
           memberId,

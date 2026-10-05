@@ -14,15 +14,13 @@ function getSupabaseAdmin() {
 // Verify LivePay webhook signature
 function verifyLivePaySignature(rawBody: string, signatureHeader: string | null): boolean {
   const webhookSecret = process.env.LIVEPAY_SECRET_KEY;
-  
-  // Security Guard: fail closed in production or whenever insecure mode is not explicitly enabled
+
+  // SECURITY: Fail closed — HMAC signature verification is mandatory for
+  // payment webhooks. There is no insecure/dev bypass mode; an unconfigured
+  // secret means every webhook is rejected.
   if (!webhookSecret || webhookSecret === 'YOUR_LIVEPAY_SECRET_KEY') {
-    if (true) {
-      console.error('[LivePay Webhook] ERROR: LIVEPAY_SECRET_KEY not configured. Webhook rejected for security.');
-      return false;
-    }
-    console.warn('[LivePay Webhook] WARNING: Webhook secret not configured - skipping signature verification (DEV ONLY)!');
-    return true;
+    console.error('[LivePay Webhook] ERROR: LIVEPAY_SECRET_KEY not configured. Webhook rejected for security.');
+    return false;
   }
 
   if (!signatureHeader) {

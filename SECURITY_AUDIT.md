@@ -85,6 +85,25 @@ The review identified **3 CRITICAL, 3 HIGH, and 6 MEDIUM** findings. The most se
 - `app/api/payments/[intentId]/route.ts`: replaced a fragile CommonJS `require()` with a proper import (route now type-checks strictly).
 - `next.config.mjs`: added `Strict-Transport-Security` and `Permissions-Policy` headers (nosniff/referrer policy already present). `X-Frame-Options` deliberately not set — the app is designed for iframe embedding.
 
+### 🟠 V13 (HIGH) — Middleware redirected API calls to the HTML login page
+**Where:** `lib/supabase-middleware.ts`, `middleware.ts`
+**Impact:** `supabase-js` reports a missing session as HTTP status **400**, which matched the middleware's "redirect to /auth" condition. Consequently every cookieless request to a non-excluded path received a **307 redirect to the HTML login page** instead of reaching its handler:
+- The **public `/api/organizations` registration dropdown** (used by logged-out visitors signing up) followed the redirect and received HTML instead of JSON.
+- The **`/api/inngest` background-job endpoint** (called by Inngest Cloud with signed payloads and no cookies) was redirected, breaking SMS dispatch/reconciliation jobs whenever Inngest is configured.
+- Cookie-authenticated member APIs returned HTML-followed redirects instead of proper 401s on expired sessions, degrading the client's error handling.
+
+**Fix applied:**
+- Middleware is now API-aware: API requests carrying an `Authorization` header are passed through untouched (routes cryptographically verify Bearer sessions / gateway API keys themselves); anonymous/expired API requests receive a **401 JSON** (with stale `sb-*` cookies cleared) instead of a login-page redirect. Page routes keep the redirect behavior.
+- `api/organizations` and `api/inngest` added to the middleware matcher exclusions (public/callback-style endpoints that must never depend on a session).
+
+### 🟠 V14 (HIGH) — Admin console regression: two calls still sent tokens in request bodies
+**Where:** `app/admin/AdminConsole.tsx`
+**Impact:** During the V8 remediation, the `/api/admin/data` and `/api/admin/loans` fetch calls were not actually converted (a silent edit failure) while their server routes had already switched to Bearer-header-only auth. The admin console would have failed to load tenant data and loan approvals would have been rejected with 401 at launch. All five admin fetch calls have been re-verified to send `Authorization: Bearer` headers with no token in the JSON body.
+
+### 🟡 V15 (MEDIUM) — Dead demo route & misleading webhook docs
+- Removed the leftover demo endpoint `/api/example-transaction` (unauthenticated stub in a production money app).
+- Cleaned the unreachable "skip signature verification (DEV ONLY)" branch from the LivePay webhook verifier — signature enforcement is now unconditionally fail-closed — and removed the misleading `ALLOW_INSECURE_WEBHOOKS` entry from the README (no code ever read it; there is no insecure mode).
+
 ---
 
 ## What was verified and found SOLID ✅
@@ -129,8 +148,10 @@ The review identified **3 CRITICAL, 3 HIGH, and 6 MEDIUM** findings. The most se
 | `app/api/organizations/route.ts` | V7 fix: active orgs only |
 | `app/api/payments/intent/route.ts` | V9 fix: fixed-origin CORS, amount validation |
 | `app/api/payments/[intentId]/route.ts` | V12 fix: proper import, strict types |
+| `app/api/example-transaction/` *(removed)* | V15 fix: dead unauthenticated demo route deleted |
+| `app/api/webhooks/livepay/route.ts` | V15 fix: dead insecure-bypass branch removed (always fail-closed) |
 | `app/auth/page.tsx` | V10+V11 fix: DB-authoritative role, password policy, no role claim in metadata |
-| `app/admin/AdminConsole.tsx` | Bearer-header auth for all 5 admin API calls |
-| `lib/admin-auth.ts`, `lib/supabase-middleware.ts` | Shared role constants |
+| `app/admin/AdminConsole.tsx` | V8+V14 fix: Bearer-header auth for all 5 admin API calls (re-verified) |
+| `lib/admin-auth.ts`, `lib/supabase-middleware.ts`, `middleware.ts` | Shared role constants; V13 fix: API-aware 401 JSON instead of login redirects; matcher excludes public endpoints |
 | `lib/rate-limit.ts` | 4 new limiters |
 | `next.config.mjs` | HSTS + Permissions-Policy headers |

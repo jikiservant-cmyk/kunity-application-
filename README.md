@@ -58,7 +58,8 @@ cp .env.example .env.local
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
 | `INNGEST_EVENT_KEY` | Inngest event key for reliable asynchronous background jobs (SMS dispatch, reconciliations) |
 | `INNGEST_SIGNING_KEY` | Inngest webhook signing key |
-| `ALLOW_INSECURE_WEBHOOKS` | Set to `"false"` in production. Set to `"true"` only for isolated local testing without HMAC signatures. |
+
+> **Webhook security note:** Payment webhooks (LivePay / NaJiki) enforce HMAC-SHA256 signature verification and **always fail closed** — there is no insecure/bypass mode. If the signing secret is not configured, every webhook is rejected.
 
 ### 3. Run Development Server
 
