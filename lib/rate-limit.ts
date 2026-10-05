@@ -22,8 +22,10 @@ const createLimiter = (prefix: string, limit: number, windowSeconds: number = 60
     // SECURITY: `limitOverride` lets callers tighten the limit per call-site.
     // Previously the limit passed to `.check()` was silently ignored, so routes
     // believed they were enforcing stricter limits than they actually were.
+    // The override is capped at the constructor default so a call-site can
+    // never LOOSEN the limiter below its designed ceiling.
     limit: async (identifier: string, limitOverride?: number): Promise<{ success: boolean }> => {
-      const effectiveLimit = limitOverride ?? limit;
+      const effectiveLimit = Math.min(limitOverride ?? limit, limit);
       // If Redis is configured, use atomic Redis INCR + EXPIRE (production multi-instance safe)
       if (redis) {
         try {

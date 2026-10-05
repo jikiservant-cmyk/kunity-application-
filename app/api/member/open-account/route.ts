@@ -48,8 +48,9 @@ export async function POST(req: NextRequest) {
     }
 
     // SECURITY: The savings product must belong to the caller's own
-    // organization. Without this check a member could open an account linked
-    // to another SACCO's product (cross-tenant data pollution).
+    // organization AND be active. Without this check a member could open an
+    // account linked to another SACCO's product (cross-tenant data pollution)
+    // or resurrect a deactivated product.
     const { data: product, error: productErr } = await supabaseAdminLocal
       .schema('kunity')
       .from('savings_products')
@@ -61,6 +62,13 @@ export async function POST(req: NextRequest) {
     if (productErr || !product) {
       return NextResponse.json(
         { error: 'Savings product not found in your organization' },
+        { status: 403 }
+      );
+    }
+
+    if (product.is_active === false) {
+      return NextResponse.json(
+        { error: 'This savings product is no longer available' },
         { status: 403 }
       );
     }

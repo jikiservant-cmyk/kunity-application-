@@ -74,28 +74,33 @@ export async function POST(req: NextRequest) {
     // Onboarding fallback: only fill a missing tenant binding, and only from
     // server-side records (never from client-writable auth metadata).
     if (!orgId) {
-      // a) The caller's own member record
-      const { data: adminMember } = await supabaseAdmin
+      // a) An organization this administrator founded/created. This is a
+      //    SERVER-ASSIGNED signal (org creation is restricted to platform
+      //    operators), so it takes priority over self-service records.
+      const { data: ownedOrg } = await supabaseAdmin
         .schema('kunity')
-        .from('members')
-        .select('organization_id')
-        .eq('id', adminAuth.user.id)
+        .from('organizations')
+        .select('id')
+        .eq('created_by', adminAuth.user.id)
         .maybeSingle();
-
-      if (adminMember?.organization_id) {
-        orgId = adminMember.organization_id;
+      if (ownedOrg?.id) {
+        orgId = ownedOrg.id;
       }
 
-      // b) An organization created by this administrator
+      // b) The caller's own APPROVED member record. Self-service signup lets a
+      //    user register into any active SACCO, so a pending/rejected member
+      //    row must never be trusted to bind an administrator's tenant — only
+      //    a membership the target organization actually approved counts.
       if (!orgId) {
-        const { data: ownedOrg } = await supabaseAdmin
+        const { data: adminMember } = await supabaseAdmin
           .schema('kunity')
-          .from('organizations')
-          .select('id')
-          .eq('created_by', adminAuth.user.id)
+          .from('members')
+          .select('organization_id, status')
+          .eq('id', adminAuth.user.id)
           .maybeSingle();
-        if (ownedOrg?.id) {
-          orgId = ownedOrg.id;
+
+        if (adminMember?.organization_id && adminMember.status === 'active') {
+          orgId = adminMember.organization_id;
         }
       }
 
