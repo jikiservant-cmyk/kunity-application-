@@ -103,9 +103,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Payment is not yet successful' }, { status: 400 });
     }
     
-    // Validate amount from gateway matches what we expect
+    // Validate amount from gateway matches what we expect.
+    // FIN-12: compare with a small tolerance — strict !== breaks when the
+    // gateway returns the amount as a string or with different precision.
     const expectedAmount = Number(request.amount);
-    if (Number(payment.amount) !== expectedAmount) {
+    if (!Number.isFinite(expectedAmount) ||
+        Math.abs(Number(payment.amount) - expectedAmount) > 0.01) {
       return NextResponse.json({ error: 'Payment amount mismatch' }, { status: 400 });
     }
 

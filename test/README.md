@@ -52,3 +52,37 @@ node test/attack-tests.mjs
 The mock exposes `GET /_test/state` and `POST /_test/reset` for assertions on database
 side effects (e.g. whether the authoritative `admin_profiles.tenant_id` was rewritten,
 which RPCs ran, what was inserted).
+
+---
+
+# Financial integrity suite — real PostgreSQL
+
+`financial-tests.mjs` runs the **actual SQL migrations** against a real
+PostgreSQL 17 engine ([PGlite](https://pglite.dev) — Postgres compiled to WASM,
+no Docker needed) and proves both halves of the financial-integrity work:
+
+- **Phase 1 (16 checks)** — applies the ORIGINAL financial RPC migrations
+  (`02, 03, 09_credit, 10_debit, 15, 16, 18`) and reproduces every bug
+  FIN-01 … FIN-19 live: broken repayment SQL, amount-drift acceptance,
+  vanishing activation money, unbalanced journals, negative SMS wallets,
+  dead wallet RPCs, cross-wallet credits, …
+- **Phase 2 (16 checks)** — applies `supabase/migrations/21_financial_integrity.sql`
+  and verifies every fix: balanced double-entry journals, sacco float maintained,
+  member balances credited, drift fail-closed, idempotent replays, eligibility
+  guards, funds checks, and schema-type agnosticism (enum/text status columns,
+  uuid/text wallet ids).
+
+## Running
+
+```bash
+npm install --no-save @electric-sql/pglite   # once; not a runtime dependency
+node test/financial-tests.mjs
+```
+
+No `.env.local`, mock, or app server needed — everything is in-database.
+`financial-base-schema.sql` is a minimal reconstruction of the tables the RPCs
+touch (kunity + public schemas); it is deliberately missing `kunity.loan_repayments`
+so the original repayment bug reproduces exactly as it would on a fresh
+environment.
+
+Exit code is non-zero if any check fails, so it can be wired into CI.

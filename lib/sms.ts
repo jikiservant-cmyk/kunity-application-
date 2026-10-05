@@ -71,19 +71,24 @@ export async function sendSms({
     let finalMessage = message || '';
 
     if (eventType && templateData) {
-      const { data: templateRecord, error: tmplErr } = await supabaseAdmin
-        .schema('public')
-        .from('sms_templates')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .or(`event_code.eq.${eventType},event_type.eq.${eventType}`)
-        .maybeSingle();
-      
-      const templateBody = templateRecord?.template_text || templateRecord?.body;
-      if (!tmplErr && templateBody) {
-        finalMessage = interpolateTemplate(templateBody, templateData);
-      } else if (finalMessage) {
-        finalMessage = interpolateTemplate(finalMessage, templateData);
+      // SECURITY: never interpolate raw values into PostgREST .or() filters —
+      // strip anything that could alter the filter expression.
+      const safeEventType = String(eventType).replace(/[^A-Za-z0-9_-]/g, '');
+      if (safeEventType) {
+        const { data: templateRecord, error: tmplErr } = await supabaseAdmin
+          .schema('public')
+          .from('sms_templates')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .or(`event_code.eq.${safeEventType},event_type.eq.${safeEventType}`)
+          .maybeSingle();
+
+        const templateBody = templateRecord?.template_text || templateRecord?.body;
+        if (!tmplErr && templateBody) {
+          finalMessage = interpolateTemplate(templateBody, templateData);
+        } else if (finalMessage) {
+          finalMessage = interpolateTemplate(finalMessage, templateData);
+        }
       }
     } else if (templateData && finalMessage) {
       finalMessage = interpolateTemplate(finalMessage, templateData);
@@ -250,22 +255,33 @@ export async function sendSms({
       const isHttpError = err.message.startsWith('HTTP_');
       const isClientError = isHttpError && err.message.match(/HTTP_4\d\d/);
       
-      // 7. Refund the wallet ONLY if it's a known HTTP error (e.g. 400 Bad Request) 
+      // 7. Refund the wallet ONLY if it's a known HTTP error (e.g. 400 Bad Request)
       // Do NOT refund on network timeouts or 5xx, as the message might still be processing.
       if (isClientError) {
-        let refundBalance = finalBalance + totalCost;
-        const { data: creditResult, error: creditErr } = await supabaseAdmin
-          .rpc('credit_sms_wallet', { 
-            p_wallet_id: wallet.id, 
-            p_amount: totalCost,
-             p_idempotency_key: idempotencyKey ? `refund_${idempotencyKey}` : `refund_${Date.now()}_${Math.random().toString(36).substring(7)}`
-           });
+        // FIN-06 FIX: the previous refund called `credit_sms_wallet` with a
+        // `p_idempotency_key` parameter that function does not accept — the RPC
+        // lookup always failed, so failed SMS were debited but NEVER refunded.
+        // Use the dedicated idempotent refund RPC instead.
+        const refundReference = idempotencyKey
+          ? `refund_${idempotencyKey}`
+          : `refund_${crypto.createHash('sha256').update(`${tenantId}:${cleanPhone}:${eventType}:${finalMessage}`).digest('hex').substring(0, 32)}`;
 
-        if (creditErr) {
-          console.error('[SMS Service] Failed to credit wallet atomically:', creditErr);
-        } else if (creditResult && creditResult.success) {
-          refundBalance = creditResult.new_balance;
+        const { data: refundResult, error: refundErr } = await supabaseAdmin
+          .rpc('refund_sms_wallet', {
+            p_wallet_id: wallet.id,
+            p_amount: totalCost,
+            p_reference: refundReference
+          })
+          .single();
+
+        let refundBalance: number | undefined;
+        if (refundErr) {
+          console.error('[SMS Service] Failed to refund wallet after failed dispatch:', refundErr);
+        } else if (refundResult) {
+          const b = parseFloat(String((refundResult as { balance?: number | string }).balance ?? ''));
+          if (Number.isFinite(b)) refundBalance = b;
         }
+        refundBalance = refundBalance !== undefined ? refundBalance : finalBalance + totalCost;
 
         // 8. Update the SMS log status to failed
         await supabaseAdmin

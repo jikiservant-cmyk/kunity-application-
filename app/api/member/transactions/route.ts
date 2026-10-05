@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { memberActionLimiter } from '@/lib/rate-limit';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,6 +38,24 @@ export async function POST(req: NextRequest) {
 
     if (!action || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json({ error: 'Invalid or missing amount/action' }, { status: 400 });
+    }
+
+    // FIN-10: rate limit member money-movement operations (brute-force guard)
+    try {
+      await memberActionLimiter.check(30, `member:tx:${user.id}`);
+    } catch {
+      return NextResponse.json(
+        { error: 'Too many transaction requests. Please wait a moment before trying again.' },
+        { status: 429 }
+      );
+    }
+
+    // Validate identifiers before hitting the database
+    if ((action === 'withdraw' || action === 'repay') && (!accountId || !UUID_RE.test(String(accountId)))) {
+      return NextResponse.json({ error: 'Invalid accountId' }, { status: 400 });
+    }
+    if (action === 'repay' && (!loanId || !UUID_RE.test(String(loanId)))) {
+      return NextResponse.json({ error: 'Invalid loanId' }, { status: 400 });
     }
 
     // Fetch the member record to verify organization mapping
