@@ -3,21 +3,48 @@ import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
 
+// SECURITY: CORS allowlist. Never reflect an arbitrary caller-supplied Origin —
+// origin reflection lets any website execute authenticated cross-origin requests.
+// Only origins explicitly configured for this deployment are allowed.
+const getAllowedOrigins = (): string[] => {
+  const origins: string[] = [];
+  const candidates = [
+    process.env.APP_URL,
+    process.env.NEXT_PUBLIC_SITE_URL,
+    process.env.NEXT_PUBLIC_APP_URL,
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    try {
+      origins.push(new URL(candidate).origin);
+    } catch {
+      // ignore malformed env values
+    }
+  }
+  return origins;
+};
+
+const resolveCorsOrigin = (requestOrigin: string | null): string | null => {
+  if (!requestOrigin) return null;
+  return getAllowedOrigins().includes(requestOrigin) ? requestOrigin : null;
+};
+
 export async function OPTIONS(req: Request) {
+  const allowedOrigin = resolveCorsOrigin(req.headers.get('origin'));
   return new NextResponse(null, {
     status: 204,
     headers: {
-      'Access-Control-Allow-Origin': req.headers.get('origin') || process.env.NEXT_PUBLIC_SITE_URL || 'https://demo-placeholder.supabase.co', 
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      ...(allowedOrigin ? { 'Access-Control-Allow-Origin': allowedOrigin } : {}),
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     },
   });
 }
 
 export async function POST(req: Request) {
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': process.env.NEXT_PUBLIC_SITE_URL || 'https://demo-placeholder.supabase.co', 
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  const allowedOrigin = resolveCorsOrigin(req.headers.get('origin'));
+  const corsHeaders: Record<string, string> = {
+    ...(allowedOrigin ? { 'Access-Control-Allow-Origin': allowedOrigin } : {}),
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 
@@ -58,8 +85,14 @@ export async function POST(req: Request) {
 
 
     // 1. Validate inputs
+    // SECURITY: amount must be a strictly positive, finite number. A truthy
+    // check alone would let negative amounts through (-5 is truthy in JS).
+    const numericAmount = Number(amount);
     if (!amount || !phoneNumber || !memberId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400, headers: corsHeaders });
+    }
+    if (typeof amount !== 'number' || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return NextResponse.json({ error: 'Invalid amount: must be a positive number' }, { status: 400, headers: corsHeaders });
     }
 
     // Apply rate limiting per member or phone number
@@ -75,28 +108,78 @@ export async function POST(req: Request) {
     // 2. Generate a secure idempotency key
     const idempotencyKey = `najiki_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
-    // Fetch tenant code from public.tenants
-    let tenantCode = organizationId || "";
-    if (organizationId) {
-      if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-        throw new Error("Supabase credentials missing in environment variables");
-      }
-      const supabaseAdmin = createServerClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL,
-        process.env.SUPABASE_SERVICE_ROLE_KEY || '',
-        {
-          cookies: {
-            getAll() { return []; },
-            setAll() {},
-          },
+    // SECURITY: Resolve the caller's organization from SERVER-AUTHORITATIVE
+    // records — never trust a client-supplied organizationId for gateway tenant
+    // routing. A caller must only ever create payment intents tied to an
+    // organization they actually belong to.
+    let resolvedOrgId: string | null = null;
+
+    const { data: callerMember } = await supabaseAdminLocal2
+      .schema('kunity')
+      .from('members')
+      .select('id, organization_id')
+      .eq('id', authUser.id)
+      .maybeSingle();
+
+    if (callerMember?.organization_id) {
+      resolvedOrgId = callerMember.organization_id;
+    } else {
+      // No member record: only allow tenant-scoped admin operations (e.g. BUY_SMS
+      // topups), resolved from the authoritative admin_profiles.tenant_id.
+      const isBuySms = (paymentTypeCode || '').toUpperCase() === 'BUY_SMS';
+      if (isBuySms) {
+        const { data: adminProfile } = await supabaseAdminLocal2
+          .from('admin_profiles')
+          .select('tenant_id, role')
+          .eq('id', authUser.id)
+          .maybeSingle();
+        const isAdmin = adminProfile && ['sacco_admin', 'system_admin', 'super_admin'].includes(adminProfile.role);
+        if (isAdmin && adminProfile.tenant_id) {
+          resolvedOrgId = adminProfile.tenant_id;
         }
+      }
+    }
+
+    if (!resolvedOrgId) {
+      return NextResponse.json(
+        { error: 'Forbidden: Caller is not a member of any organization' },
+        { status: 403, headers: corsHeaders }
       );
-      
-      const { data: tenant, error } = await supabaseAdmin
+    }
+
+    // If the client supplied an organizationId, it must match the
+    // server-resolved organization. Mismatch = cross-tenant probing → reject.
+    if (organizationId && organizationId !== resolvedOrgId) {
+      return NextResponse.json(
+        { error: 'Forbidden: organizationId does not match your organization membership' },
+        { status: 403, headers: corsHeaders }
+      );
+    }
+    const finalOrganizationId = resolvedOrgId;
+
+    // FIN-23 (source): the stored payment type is later trusted by the webhook
+    // RPC's whitelist. Only the types the member app actually uses are allowed
+    // for member callers; unknown types would be held for review at webhook
+    // time anyway — reject them here with a clear error.
+    const requestedType = (paymentTypeCode || 'account_activation').trim();
+    const isMemberCaller = !!callerMember?.organization_id;
+    const memberAllowedTypes = ['deposit', 'account_activation'];
+    if (isMemberCaller && !memberAllowedTypes.includes(requestedType)) {
+      return NextResponse.json(
+        { error: `Invalid paymentTypeCode. Allowed: ${memberAllowedTypes.join(', ')}` },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+    // Admin BUY_SMS topups keep their own type (credited via wallet_transactions).
+
+    // Fetch tenant code from public.tenants
+    let tenantCode = finalOrganizationId;
+    {
+      const { data: tenant, error } = await supabaseAdminLocal2
         .schema('public')
         .from('tenants')
         .select('code')
-        .eq('id', organizationId)
+        .eq('id', finalOrganizationId)
         .maybeSingle();
 
       if (tenant && tenant.code) {
@@ -117,14 +200,14 @@ export async function POST(req: Request) {
       tenantCode: tenantCode,
       paymentTypeCode: paymentTypeCode || 'account_activation',
       externalEntityId: finalMemberId,
-      amount: Number(amount),     // Ensure strict number type
+      amount: numericAmount,     // Ensure strict number type
       currency: currency || 'UGX',
       phoneNumber: phoneNumber,
       reference: idempotencyKey,
       idempotencyKey: idempotencyKey,
       metadata: {
         memberId: finalMemberId,
-        organizationId,
+        organizationId: finalOrganizationId,
         paymentTypeCode
       }
     };
@@ -162,7 +245,7 @@ export async function POST(req: Request) {
 
     const intent = {
       id: najikiReference, // Use NaJiki reference as the ID so frontend can poll the correct endpoint
-      amount: Number(amount),
+      amount: numericAmount,
       currency: currency || 'UGX',
       status: 'pending',
       providerInfo: data
@@ -181,9 +264,9 @@ export async function POST(req: Request) {
 
     const { error: adminInsertError } = await supabaseAdminLocal3.schema('kunity').from('payment_requests').insert({
       id: dbId,
-      organization_id: organizationId,
+      organization_id: finalOrganizationId,
       member_id: finalMemberId,
-      amount: Number(amount),
+      amount: numericAmount,
       currency: currency || 'UGX',
       phone_number: phoneNumber,
       status: 'pending',

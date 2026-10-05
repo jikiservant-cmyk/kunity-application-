@@ -199,27 +199,34 @@ function AuthContent() {
         if (signInError) throw signInError;
         
         if (data.user) {
-          // Fetch the actual role to redirect cleanly
+          // Fetch the actual role to redirect cleanly.
+          // SECURITY: query the authoritative admin_profiles table first.
+          // user_metadata is client-writable and must never be trusted for
+          // authorization decisions (the middleware re-checks authoritatively
+          // on every page navigation, so this only affects the redirect target).
           let isSaccoAdmin = false;
-          let role = data.user.user_metadata?.role;
-          
-          if (!role) {
-            try {
-              const { data: profile } = await supabase
-                .schema('public')
-                .from('admin_profiles')
-                .select('role')
-                .eq('id', data.user.id)
-                .maybeSingle();
-              
-              role = profile?.role;
-            } catch (profileErr) {
-              console.warn("⚠️ Failed to fetch profile role on login:", profileErr);
-            }
+          let role: string | undefined;
+
+          try {
+            const { data: profile } = await supabase
+              .schema('public')
+              .from('admin_profiles')
+              .select('role')
+              .eq('id', data.user.id)
+              .maybeSingle();
+
+            role = profile?.role;
+          } catch (profileErr) {
+            console.warn("⚠️ Failed to fetch profile role on login:", profileErr);
           }
-          
+
+          // Fallback to metadata for redirect UX only — never a security decision.
+          if (!role) {
+            role = data.user.user_metadata?.role;
+          }
+
           role = role || 'member';
-          isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin', 'admin'].includes(role);
+          isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin'].includes(role);
 
           await supabase.auth.refreshSession();
           router.refresh();

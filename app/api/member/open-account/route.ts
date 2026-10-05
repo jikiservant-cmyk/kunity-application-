@@ -47,6 +47,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'productId is required' }, { status: 400 });
     }
 
+    // SECURITY: The savings product must belong to the caller's own
+    // organization AND be active. Without this check a member could open an
+    // account linked to another SACCO's product (cross-tenant data pollution)
+    // or resurrect a deactivated product.
+    const { data: product, error: productErr } = await supabaseAdminLocal
+      .schema('kunity')
+      .from('savings_products')
+      .select('id, is_active')
+      .eq('id', productId)
+      .eq('organization_id', member.organization_id)
+      .maybeSingle();
+
+    if (productErr || !product) {
+      return NextResponse.json(
+        { error: 'Savings product not found in your organization' },
+        { status: 403 }
+      );
+    }
+
+    if (product.is_active === false) {
+      return NextResponse.json(
+        { error: 'This savings product is no longer available' },
+        { status: 403 }
+      );
+    }
+
     const { data: existingMs } = await supabaseAdminLocal.schema('kunity')
       .from('member_savings')
       .select('id')

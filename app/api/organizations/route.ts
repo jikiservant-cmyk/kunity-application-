@@ -16,10 +16,14 @@ export async function GET() {
     });
 
     console.log('🔄 Fetching organizations from kunity.organizations...');
+    // SECURITY: This route runs with the service role key, which bypasses the
+    // organizations_read_active RLS policy. Filter manually so unauthenticated
+    // callers (the signup dropdown) can only ever see ACTIVE organizations.
     let { data: orgs, error: fetchError } = await supabaseAdmin
       .schema('kunity')
       .from('organizations')
-      .select('id, name');
+      .select('id, name')
+      .eq('is_active', true);
 
     if (fetchError) {
       console.error('❌ Error fetching organizations from DB:', fetchError);

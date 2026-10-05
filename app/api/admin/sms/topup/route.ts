@@ -81,9 +81,21 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (createWalletErr) {
-        return NextResponse.json({ error: 'Failed to find or auto-provision wallet.' }, { status: 400 });
+        // FIN-29: a concurrent request may have provisioned the wallet first
+        // (unique tenant) — re-fetch instead of failing the topup.
+        const { data: refetched } = await supabaseAdmin
+          .schema('public')
+          .from('wallets')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+        if (!refetched) {
+          return NextResponse.json({ error: 'Failed to find or auto-provision wallet.' }, { status: 400 });
+        }
+        wallet = refetched;
+      } else {
+        wallet = newWallet;
       }
-      wallet = newWallet;
     } else {
       wallet = existingWallet;
     }
