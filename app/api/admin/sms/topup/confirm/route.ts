@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from "@supabase/ssr";
+import { verifyAdminAndTenant } from '@/lib/admin-auth';
+import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
 
 export async function POST(req: NextRequest) {
@@ -21,20 +23,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing token or intentId' }, { status: 400 });
     }
 
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized: Invalid token' }, { status: 401 });
+    // 1. Verify caller is a genuine administrator (token + role from admin_profiles)
+    const authResult = await verifyAdminAndTenant(supabaseAdmin, token);
+    if (authResult.error || !authResult.auth) {
+      return NextResponse.json({ error: authResult.error }, { status: authResult.status });
+    }
+    const adminAuth = authResult.auth;
+
+    // Rate limit topup confirmation attempts per administrator
+    try {
+      await smsSendLimiter.check(20, `admin:topup:${adminAuth.user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Rate limit exceeded for topup confirmation' }, { status: 429 });
     }
 
-    const { data: adminProfile } = await supabaseAdmin
-      .from('admin_profiles')
-      .select('tenant_id')
-      .eq('id', user.id)
-      .maybeSingle();
-
-    const tenantId = adminProfile?.tenant_id;
+    const tenantId = adminAuth.tenantId;
     if (!tenantId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 400 });
+      return NextResponse.json({ error: 'Unauthorized: Admin is not associated with any tenant' }, { status: 403 });
     }
 
     // Safe parameter lookup avoiding string interpolation in .or()
@@ -65,8 +70,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Payment request not found' }, { status: 404 });
     }
     
-    // Ensure the payment request actually belongs to this tenant
-    if (request.tenant_id !== tenantId) {
+    // Ensure the payment request actually belongs to this admin's tenant.
+    // Global admins (super_admin/system_admin) may confirm for any tenant.
+    if (request.tenant_id !== tenantId && !adminAuth.isGlobalAdmin) {
       return NextResponse.json({ error: 'Unauthorized: Payment request does not belong to this tenant' }, { status: 403 });
     }
 
@@ -117,8 +123,11 @@ export async function POST(req: NextRequest) {
 
     const addedAmount = expectedAmount;
 
-    // Credit wallet atomically via idempotent RPC with row lock on wallet_transactions
-    let creditResult: any = null;
+    // Credit wallet atomically via idempotent RPC with row lock on wallet_transactions.
+    // SECURITY: There is deliberately NO fallback to the non-idempotent
+    // credit_sms_wallet RPC — a fallback would allow double-crediting the wallet
+    // when the idempotent RPC fails transiently and the request is retried.
+    // If the idempotent RPC fails we fail closed and surface the error instead.
     const { data: idempotentResult, error: idempotentErr } = await supabaseAdmin
       .rpc('credit_sms_wallet_idempotent', {
         p_wallet_id: existingWallet.id,
@@ -127,29 +136,11 @@ export async function POST(req: NextRequest) {
       });
 
     if (idempotentErr) {
-      console.warn('Idempotent RPC failed, trying fallback:', idempotentErr.message);
-      const { data: fallbackResult, error: creditErr } = await supabaseAdmin
-        .rpc('credit_sms_wallet', { 
-           p_wallet_id: existingWallet.id,
-           p_amount: addedAmount
-        })
-        .single();
-
-      if (creditErr) {
-         console.error('Error crediting wallet balance:', creditErr);
-         return NextResponse.json({ error: 'Failed to update wallet balance' }, { status: 500 });
-      }
-      creditResult = fallbackResult;
-
-      // Update payment request status by authoritative row ID
-      await supabaseAdmin
-        .schema('public')
-        .from('wallet_transactions')
-        .update({ note: 'success', status: 'success', description: 'SMS topup successful' })
-        .eq('id', request.id);
-    } else {
-      creditResult = Array.isArray(idempotentResult) ? idempotentResult[0] : idempotentResult;
+      console.error('Error crediting wallet balance (idempotent RPC, failing closed):', idempotentErr);
+      return NextResponse.json({ error: 'Failed to update wallet balance' }, { status: 500 });
     }
+
+    let creditResult: any = Array.isArray(idempotentResult) ? idempotentResult[0] : idempotentResult;
 
     if (!creditResult) {
       const { data: refreshedWallet } = await supabaseAdmin
@@ -193,7 +184,7 @@ export async function POST(req: NextRequest) {
       });
 
     await logAudit(supabaseAdmin, {
-      adminId: user.id,
+      adminId: adminAuth.user.id,
       tenantId,
       action: 'sms_topup_confirm',
       entityType: 'wallets',

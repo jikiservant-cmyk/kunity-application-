@@ -493,7 +493,13 @@ export default function MemberDashboard() {
     const interval = setInterval(async () => {
       attempts++;
       try {
-        const response = await fetch(`/api/payments/${promptPayment.id}`);
+        // SECURITY/FIX: /api/payments/[intentId] requires a Bearer session token.
+        // Resolve the session on every poll so a refreshed token is used.
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return; // Session expired — stop polling silently; middleware will force re-login.
+        const response = await fetch(`/api/payments/${promptPayment.id}`, {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        });
         if (response.ok) {
           const payment = await response.json();
           const statusLower = (payment.status || '').toLowerCase();
@@ -555,9 +561,21 @@ export default function MemberDashboard() {
         return;
       }
       try {
+        // SECURITY/FIX: /api/payments/intent requires a Bearer session token.
+        // Previously this call omitted the Authorization header and always failed with 401.
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          alert("Your session has expired. Please log in again.");
+          router.push('/auth');
+          setActionLoading(false);
+          return;
+        }
         const res = await fetch('/api/payments/intent', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+          },
           body: JSON.stringify({
             amount,
             currency: 'UGX',
@@ -727,9 +745,20 @@ export default function MemberDashboard() {
                     return;
                   }
 
+                  // SECURITY/FIX: supply the required Bearer session token.
+                  const { data: { session } } = await supabase.auth.getSession();
+                  if (!session) {
+                    alert("Your session has expired. Please log in again.");
+                    router.push('/auth');
+                    setActionLoading(false);
+                    return;
+                  }
                   const res = await fetch('/api/payments/intent', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${session.access_token}`
+                    },
                     body: JSON.stringify({
                       amount: finalAmount,
                       currency: 'UGX',
