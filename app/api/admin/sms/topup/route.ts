@@ -3,6 +3,8 @@ import { createServerClient } from '@supabase/ssr';
 import { paymentGateway } from '@/lib/payments/gateway';
 import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
+import { extractBearerToken } from '@/lib/request-guard';
+import { isElevatedAdminRole } from '@/lib/roles';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,10 +23,13 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, credits, amount, momoNumber } = body;
+    const { credits, amount, momoNumber } = body;
+
+    // SECURITY: Token comes exclusively from the Authorization header.
+    const token = extractBearerToken(req);
 
     if (!token) {
-      return NextResponse.json({ error: 'Unauthorized: Missing token' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized: Missing Bearer token' }, { status: 401 });
     }
 
     if (!credits || !amount || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
@@ -45,9 +50,8 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     const role = adminProfile?.role || 'member';
-    const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin'].includes(role);
-    
-    if (!isSaccoAdmin) {
+
+    if (!isElevatedAdminRole(role)) {
       return NextResponse.json({ error: 'Forbidden: User is not an admin' }, { status: 403 });
     }
 

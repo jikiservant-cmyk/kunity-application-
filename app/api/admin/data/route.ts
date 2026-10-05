@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { extractBearerToken } from '@/lib/request-guard';
+import { adminDataLimiter } from '@/lib/rate-limit';
+import { isElevatedAdminRole, isGlobalAdminRole } from '@/lib/roles';
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,11 +17,15 @@ export async function POST(req: NextRequest) {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    const body = await req.json();
-    const { token, selectedOrgId } = body;
+    const body = await req.json().catch(() => ({}));
+    const { selectedOrgId } = body;
 
+    // SECURITY: Session token must come from the Authorization Bearer header.
+    // It must NEVER be accepted from the JSON body, which risks token leakage
+    // through request logging and APM traces.
+    const token = extractBearerToken(req);
     if (!token) {
-      return NextResponse.json({ error: 'Unauthorized: Missing token' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized: Missing Bearer token' }, { status: 401 });
     }
 
     // Verify token using admin client
@@ -26,6 +33,13 @@ export async function POST(req: NextRequest) {
 
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized: Invalid token' }, { status: 401 });
+    }
+
+    // Rate limit admin console requests per administrator
+    try {
+      await adminDataLimiter.check(60, `admin:data:${user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Rate limit exceeded for admin console requests' }, { status: 429 });
     }
 
     // Retrieve admin profile from public.admin_profiles
@@ -39,12 +53,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Database error reading profile' }, { status: 500 });
     }
 
+    // SECURITY: The role is read exclusively from the server-controlled
+    // admin_profiles table. user_metadata is client-writable and must never
+    // be consulted for authorization.
     const role = adminProfile?.role || 'member';
-    const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin'].includes(role);
-    
-    if (!isSaccoAdmin) {
+    if (!isElevatedAdminRole(role)) {
       return NextResponse.json({ error: 'Forbidden: User is not an admin' }, { status: 403 });
     }
+    const isGlobalAdmin = isGlobalAdminRole(role);
 
     // Fetch all available SACCO tenant organizations
     const { data: allOrgs } = await supabaseAdmin
@@ -55,33 +71,43 @@ export async function POST(req: NextRequest) {
 
     const validOrgIds = new Set((allOrgs || []).map((o: any) => o.id));
 
-    // Determine the logged-in user's assigned SACCO tenant organization
+    // Determine the logged-in user's assigned SACCO tenant organization.
+    //
+    // SECURITY (tenant-binding integrity):
+    // Tenant resolution uses ONLY server-authoritative sources, in strict
+    // priority order:
+    //   1. public.admin_profiles.tenant_id  (service-role managed)
+    //   2. kunity.members.organization_id    (service-role managed)
+    //   3. kunity.organizations.created_by   (service-role managed)
+    //
+    // user_metadata (tenant_id / org_id / organization_id) is deliberately
+    // NOT consulted: any authenticated user can freely overwrite their own
+    // user_metadata via supabase.auth.updateUser(), so trusting it here
+    // allowed a tenant admin to re-bind themselves to a foreign SACCO —
+    // and the previous auto-persist wrote that forged binding back into
+    // admin_profiles, poisoning every other admin endpoint.
     let orgId: string | undefined = undefined;
 
-    // 1. Check kunity.members table for this specific user
-    const { data: adminMember } = await supabaseAdmin
-      .schema('kunity')
-      .from('members')
-      .select('organization_id')
-      .eq('id', user.id)
-      .maybeSingle();
-
-    if (adminMember?.organization_id && (validOrgIds.size === 0 || validOrgIds.has(adminMember.organization_id))) {
-      orgId = adminMember.organization_id;
-    }
-
-    // 2. Check auth metadata (user_metadata)
-    const userMetaTenant = user.user_metadata?.tenant_id || user.user_metadata?.org_id || user.user_metadata?.organization_id;
-    if (!orgId && userMetaTenant && (validOrgIds.size === 0 || validOrgIds.has(userMetaTenant))) {
-      orgId = userMetaTenant;
-    }
-
-    // 3. Check public.admin_profiles table
-    if (!orgId && adminProfile?.tenant_id && (validOrgIds.size === 0 || validOrgIds.has(adminProfile.tenant_id))) {
+    // 1. Authoritative: admin_profiles.tenant_id
+    if (adminProfile?.tenant_id && (validOrgIds.size === 0 || validOrgIds.has(adminProfile.tenant_id))) {
       orgId = adminProfile.tenant_id;
     }
 
-    // 4. Check if user created or owns an organization in kunity.organizations
+    // 2. The admin's own member record, if one exists
+    if (!orgId) {
+      const { data: adminMember } = await supabaseAdmin
+        .schema('kunity')
+        .from('members')
+        .select('organization_id')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (adminMember?.organization_id && (validOrgIds.size === 0 || validOrgIds.has(adminMember.organization_id))) {
+        orgId = adminMember.organization_id;
+      }
+    }
+
+    // 3. An organization the admin personally created (service-role managed)
     if (!orgId) {
       const { data: ownedOrg } = await supabaseAdmin
         .schema('kunity')
@@ -94,33 +120,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // REMOVED FALLBACK - we must strictly fail closed if orgId isn't found
+    // Global admins may explicitly select which tenant to inspect.
+    if (!orgId && isGlobalAdmin && selectedOrgId && validOrgIds.has(selectedOrgId)) {
+      orgId = selectedOrgId;
+    }
+
+    // Fail closed if no authoritative tenant mapping exists.
     if (!orgId) {
       return NextResponse.json({ error: 'No organization mapped for this administrator' }, { status: 403 });
     }
 
-    // Proactively save resolved orgId to public.admin_profiles & user metadata
-    if (orgId) {
-      if (adminProfile && adminProfile.tenant_id !== orgId) {
-        await supabaseAdmin
-          .from('admin_profiles')
-          .update({ tenant_id: orgId })
-          .eq('id', user.id);
-      }
-      if (user.user_metadata?.tenant_id !== orgId) {
-        try {
-          await supabaseAdmin.auth.admin.updateUserById(user.id, {
-            user_metadata: { ...user.user_metadata, tenant_id: orgId }
-          });
-        } catch (mErr) {
-          console.warn("Could not update auth metadata tenant_id:", mErr);
-        }
-      }
-    }
-
-    if (!orgId) {
-      return NextResponse.json({ error: 'No organization mapped for this administrator' }, { status: 400 });
-    }
+    // SECURITY: Do NOT persist the resolved tenant anywhere from this read
+    // endpoint. admin_profiles.tenant_id and user metadata are only ever
+    // mutated through explicit, audited administrative flows.
 
     // 1. Fetch Organization Details from kunity.organizations & public.tenants
     const { data: kunityOrg } = await supabaseAdmin

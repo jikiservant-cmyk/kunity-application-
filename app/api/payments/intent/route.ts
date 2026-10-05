@@ -2,24 +2,32 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
+import { validateAmount } from '@/lib/validators';
 
-export async function OPTIONS(req: Request) {
+// SECURITY: CORS is restricted to the configured site origin. The previous
+// implementation reflected the caller's Origin header back on preflight,
+// effectively allowing any website to probe this endpoint cross-origin.
+function getCorsHeaders(): Record<string, string> {
+  const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || '';
+  if (!allowedOrigin) {
+    return {};
+  }
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
+}
+
+export async function OPTIONS() {
   return new NextResponse(null, {
     status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': req.headers.get('origin') || process.env.NEXT_PUBLIC_SITE_URL || 'https://demo-placeholder.supabase.co', 
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    },
+    headers: getCorsHeaders(),
   });
 }
 
 export async function POST(req: Request) {
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': process.env.NEXT_PUBLIC_SITE_URL || 'https://demo-placeholder.supabase.co', 
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  };
+  const corsHeaders = getCorsHeaders();
 
   try {
     const body = await req.json();
@@ -60,6 +68,12 @@ export async function POST(req: Request) {
     // 1. Validate inputs
     if (!amount || !phoneNumber || !memberId) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400, headers: corsHeaders });
+    }
+
+    // Strict server-side monetary bounds for payment intents.
+    const amountCheck = validateAmount(amount, { min: 100, max: 100_000_000 });
+    if (!amountCheck.valid) {
+      return NextResponse.json({ error: amountCheck.error }, { status: 400, headers: corsHeaders });
     }
 
     // Apply rate limiting per member or phone number

@@ -15,24 +15,26 @@ export async function GET() {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    console.log('🔄 Fetching organizations from kunity.organizations...');
+    console.log('Fetching active organizations from kunity.organizations...');
+    // SECURITY: Only ACTIVE organizations are exposed on this public,
+    // unauthenticated registration dropdown endpoint. Inactive/deactivated
+    // SACCOs must not be enumerable by anonymous callers.
     let { data: orgs, error: fetchError } = await supabaseAdmin
       .schema('kunity')
       .from('organizations')
-      .select('id, name');
+      .select('id, name')
+      .eq('is_active', true);
 
     if (fetchError) {
-      console.error('❌ Error fetching organizations from DB:', fetchError);
+      console.error('Error fetching organizations from DB:', fetchError);
       return NextResponse.json({ error: fetchError.message }, { status: 500 });
     }
 
-    
+
     if (!orgs) {
       orgs = [];
     }
 
-
-    console.log(`✅ Successfully loaded ${orgs?.length || 0} organizations`);
     return NextResponse.json({ organizations: orgs });
 
   } catch (err: unknown) {
@@ -40,7 +42,7 @@ export async function GET() {
       err instanceof Error
         ? err.message
         : 'Internal server error';
-    console.error('❌ GET /api/organizations error:', err);
+    console.error('GET /api/organizations error:', err);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

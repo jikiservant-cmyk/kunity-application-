@@ -115,3 +115,39 @@ export const messagingLimiter = {
     if (!success) throw new Error('Rate limit exceeded');
   }
 };
+
+// 8. Member Transaction Limiter — money movement (withdrawals, loan applications, repayments)
+const _memberTxLimiter = createLimiter('member_tx', 10, 60);
+export const memberTxLimiter = {
+  check: async (limit: number, token: string) => {
+    const { success } = await _memberTxLimiter.limit(token);
+    if (!success) throw new Error('Too many transaction requests. Please wait a moment before trying again.');
+  }
+};
+
+// 9. Member Account Setup Limiter — account provisioning / savings account opening
+const _memberAccountLimiter = createLimiter('member_account', 20, 60);
+export const memberAccountLimiter = {
+  check: async (limit: number, token: string) => {
+    const { success } = await _memberAccountLimiter.limit(token);
+    if (!success) throw new Error('Too many account requests. Please wait a moment before trying again.');
+  }
+};
+
+// 10. Admin Data Console Limiter — aggregated tenant dashboard reads
+const _adminDataLimiter = createLimiter('admin_data', 60, 60);
+export const adminDataLimiter = {
+  check: async (limit: number, token: string) => {
+    const { success } = await _adminDataLimiter.limit(token);
+    if (!success) throw new Error('Rate limit exceeded for admin console requests');
+  }
+};
+
+// 11. SMS Topup Confirmation Limiter — wallet crediting confirmation flow
+const _topupConfirmLimiter = createLimiter('topup_confirm', 15, 60);
+export const topupConfirmLimiter = {
+  check: async (limit: number, token: string) => {
+    const { success } = await _topupConfirmLimiter.limit(token);
+    if (!success) throw new Error('Too many topup confirmation attempts. Please wait a moment.');
+  }
+};

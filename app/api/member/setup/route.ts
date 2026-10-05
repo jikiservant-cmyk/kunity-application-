@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { memberAccountLimiter } from '@/lib/rate-limit';
+import { isSameOriginRequest, rejectCrossSiteRequest } from '@/lib/request-guard';
 
 export async function POST(req: NextRequest) {
   try {
+    // SECURITY (CSRF guard): cookie-authenticated, state-changing endpoint.
+    if (!isSameOriginRequest(req)) {
+      return rejectCrossSiteRequest();
+    }
+
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
@@ -25,6 +32,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    // Rate limit account provisioning requests per member.
+    try {
+      await memberAccountLimiter.check(20, `member:setup:${user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Too many account requests. Please wait a moment before trying again.' }, { status: 429 });
+    }
+
     const supabaseAdminLocal = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
@@ -32,12 +46,21 @@ export async function POST(req: NextRequest) {
     const { data: member, error: memberErr } = await supabaseAdminLocal
       .schema('kunity')
       .from('members')
-      .select('id, organization_id')
+      .select('id, organization_id, status')
       .eq('id', user.id)
       .maybeSingle();
 
     if (memberErr || !member) {
       return NextResponse.json({ error: 'Member profile not found' }, { status: 403 });
+    }
+
+    // Rejected or suspended members may not provision new wallets/accounts.
+    // ('pending' is allowed — onboarding requires a wallet before approval.)
+    if (member.status === 'rejected' || member.status === 'suspended') {
+      return NextResponse.json(
+        { error: `Account is ${member.status}. Contact your SACCO administrator.` },
+        { status: 403 }
+      );
     }
 
     // 1. Ensure a default savings product exists

@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
+import { extractBearerToken } from '@/lib/request-guard';
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,10 +19,13 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, recipientType, message, organizationId } = body;
+    const { recipientType, message, organizationId } = body;
+
+    // SECURITY: Token comes exclusively from the Authorization header.
+    const token = extractBearerToken(req);
 
     if (!token) {
-      return NextResponse.json({ error: 'Unauthorized: Missing session token' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized: Missing Bearer token' }, { status: 401 });
     }
 
     if (!message || !message.trim()) {

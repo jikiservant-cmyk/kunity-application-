@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateTemplatePlaceholders, SmsEventType } from '../../../../../lib/sms-templates';
+import { isElevatedAdminRole } from '../../../../../lib/roles';
 
 export async function POST(req: Request) {
   try {
@@ -41,9 +42,8 @@ export async function POST(req: Request) {
     }
 
     const role = adminProfile.role || 'member';
-    const isSaccoAdmin = ['sacco_admin', 'system_admin', 'super_admin'].includes(role);
-    
-    if (!isSaccoAdmin) {
+
+    if (!isElevatedAdminRole(role)) {
       return NextResponse.json({ error: 'Forbidden: Elevated administrator permissions required' }, { status: 403 });
     }
 
