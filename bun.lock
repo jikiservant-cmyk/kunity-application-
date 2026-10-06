@@ -5,6 +5,8 @@
     "": {
       "name": "ai-studio-applet",
       "dependencies": {
+        "@fontsource-variable/inter": "^5.3.0",
+        "@fontsource-variable/space-grotesk": "^5.3.0",
         "@google/genai": "^2.4.0",
         "@hookform/resolvers": "^5.2.1",
         "@supabase/ssr": "^0.12.0",
@@ -70,6 +72,10 @@
     "@eslint/eslintrc": ["@eslint/eslintrc@2.1.4", "", { "dependencies": { "ajv": "^6.12.4", "debug": "^4.3.2", "espree": "^9.6.0", "globals": "^13.19.0", "ignore": "^5.2.0", "import-fresh": "^3.2.1", "js-yaml": "^4.1.0", "minimatch": "^3.1.2", "strip-json-comments": "^3.1.1" } }, ""],
 
     "@eslint/js": ["@eslint/js@8.57.0", "", {}, ""],
+
+    "@fontsource-variable/inter": ["@fontsource-variable/inter@5.3.0", "", {}, "sha512-OupL48va4JNofb97w6NYeF9S7W/kHNKM0Er8Dem5nqi4jeOLrVJDoE8tZEpnMJmtkvNbB1EIPPwHcdkF6b1oUA=="],
+
+    "@fontsource-variable/space-grotesk": ["@fontsource-variable/space-grotesk@5.3.0", "", {}, "sha512-2IxmvfB08i9vnGB3Ym/AXvhRE+8XOjWMXIyDum03c+tPwH0FUoMNQfGpU8NXPxjbws0Vvss3AH0Zqt4oJBBAdw=="],
 
     "@google-cloud/cloud-sql-connector": ["@google-cloud/cloud-sql-connector@1.12.0", "", { "dependencies": { "@google-cloud/sql": "^0.25.0", "@googleapis/sqladmin": "^38.0.0", "@grpc/grpc-js": "^1.14.4", "gaxios": "^8.0.0", "google-auth-library": "^11.0.2", "p-throttle": "^8.1.0" } }, ""],
 
