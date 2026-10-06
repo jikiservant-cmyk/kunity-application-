@@ -115,6 +115,18 @@ export async function POST(req: NextRequest) {
           .eq('organization_id', effectiveOrgId);
       }
 
+      // 2b. Also flip any pending/frozen savings product enrollments to active.
+      // The payment webhooks normally do this when an activation fee settles —
+      // but when an admin lets someone in WITHOUT a settled fee (hardship
+      // waiver, cash payment recorded offline), approval must unlock them too.
+      await supabaseAdmin
+        .schema('kunity')
+        .from('member_savings')
+        .update({ status: 'active' })
+        .eq('member_id', memberId)
+        .eq('organization_id', effectiveOrgId)
+        .in('status', ['pending', 'frozen', 'inactive', 'pending_approval']);
+
       // 3. Queue approval confirmation SMS
       if (member.phone) {
         try {

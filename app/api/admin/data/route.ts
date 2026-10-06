@@ -226,7 +226,43 @@ export async function POST(req: NextRequest) {
       console.error('Error fetching tenant-scoped members:', membersErr);
     }
 
-    const membersList = membersData || [];
+    let membersList = membersData || [];
+
+    // 4b. Activation-fee evidence for pending applicants. The admin approval
+    // queue needs to show WHO HAS PAID before letting them in, so attach each
+    // pending member's newest successful account_activation payment
+    // (amount, when, provider reference) — no new tables required.
+    const pendingMemberIds = membersList
+      .filter((m: any) => m.status === 'pending' || m.status === 'pending_approval' || !m.status)
+      .map((m: any) => m.id);
+
+    if (pendingMemberIds.length > 0) {
+      const { data: activationPayments } = await supabaseAdmin
+        .schema('kunity')
+        .from('payment_requests')
+        .select('member_id, amount, internal_reference, provider, created_at')
+        .in('member_id', pendingMemberIds)
+        .eq('status', 'success')
+        .or('payment_type.eq.account_activation,internal_reference.like.PAY-ACT-%')
+        .order('created_at', { ascending: false });
+
+      const latestByMember = new Map<string, any>();
+      for (const p of activationPayments || []) {
+        if (!latestByMember.has(p.member_id)) {
+          latestByMember.set(p.member_id, {
+            amount: parseFloat(p.amount || '0'),
+            paid_at: p.created_at,
+            reference: p.internal_reference || null,
+            provider: p.provider || null,
+          });
+        }
+      }
+
+      membersList = membersList.map((m: any) => ({
+        ...m,
+        activation_payment: latestByMember.get(m.id) || null,
+      }));
+    }
 
     // Calculate tenant-scoped member statistics
     const totalMembers = membersList.length;

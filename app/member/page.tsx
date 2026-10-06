@@ -135,6 +135,10 @@ export default function MemberDashboard() {
   const [member, setMember] = useState<any>(null);
   const [wallet, setWallet] = useState<any>(null);
   const [allAccounts, setAllAccounts] = useState<any[]>([]);
+  // Holds the successful account_activation payment once recorded
+  // (distinguishes "hasn't paid yet" from "paid, waiting for the SACCO
+  // admin to let them in"). Full portal access requires member.status === 'active'.
+  const [activationPayment, setActivationPayment] = useState<any>(null);
   const [savingProducts, setSavingProducts] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loans, setLoans] = useState<any[]>([]);
@@ -348,7 +352,8 @@ export default function MemberDashboard() {
       
       // Check #1: Check if there are any active accounts AND active member_savings
       let isActivated = accountsData.some((a: any) => a.is_active === true && a.status === 'active');
-      
+      if (isActivated) setActivationPayment({ settled: true }); // accounts live → fee was settled (record unknown)
+
       // Check #2: Failsafe - check if there's a successful account_activation payment
       if (!isActivated) {
         const { data: paymentData } = await supabase.schema('kunity')
@@ -361,7 +366,8 @@ export default function MemberDashboard() {
           .limit(1);
           
         isActivated = paymentData !== null && paymentData.length > 0;
-        
+        if (isActivated) setActivationPayment(paymentData[0]);
+
         // If failsafe check passes, automatically activate the accounts and reload data
         if (isActivated) {
           await supabase.schema('kunity')
@@ -655,6 +661,143 @@ export default function MemberDashboard() {
       <div className="h-screen flex items-center justify-center" style={{ backgroundColor: T.bg }}>
         <Loader2 className="w-8 h-8 animate-spin" style={{ color: T.cMid }} />
       </div>
+    );
+  }
+
+  /* ── Membership gate ─────────────────────────────────────────────
+     Joining the SACCO is a two-step handshake:
+       1. the member pays the activation fee, and
+       2. the SACCO admin lets them in.
+     Before this gate, paying alone unlocked everything. Now the admin
+     decides who enters: members who paid wait in a friendly lobby until
+     approved (status → 'active'), and declined/paused accounts get a
+     clear human explanation instead of silently ending up inside. */
+  const membershipStatus: string | undefined = member?.status;
+  const saccoOrgName = member?.organization?.name || member?.organization_name || 'your SACCO';
+  const firstName = member?.first_name || profile?.first_name || 'there';
+
+  const gateShell = (children: any) => (
+    <div style={{
+      maxWidth: 600, margin: "0 auto", minHeight: "100vh", position: 'relative',
+      background: T.bg, display: "flex", flexDirection: "column",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif",
+      WebkitFontSmoothing: "antialiased"
+    }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center' }}>
+        {children}
+      </div>
+    </div>
+  );
+
+  if (membershipStatus === 'rejected') {
+    return gateShell(
+      <>
+        <div style={{ width: 80, height: 80, borderRadius: 20, background: '#FEE2E2', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
+          <Shield size={36} color={T.red} />
+        </div>
+        <h1 style={{ fontSize: 26, fontWeight: 800, color: T.text, marginBottom: 12 }}>Not this time, {firstName}</h1>
+        <p style={{ fontSize: 15, color: T.sub, lineHeight: 1.6, maxWidth: 380, margin: '0 0 28px' }}>
+          The team at <strong>{saccoOrgName}</strong> wasn&rsquo;t able to approve your membership application.
+          If you think this is a mistake, please visit the office or give them a call — they&rsquo;ll happily talk it through with you.
+        </p>
+        <button onClick={handleSignOut} style={{ padding: '12px 24px', borderRadius: 14, background: 'white', border: `1px solid ${T.border}`, color: T.sub, fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <LogOut size={16} /> Sign out
+        </button>
+      </>
+    );
+  }
+
+  if (membershipStatus === 'suspended') {
+    return gateShell(
+      <>
+        <div style={{ width: 80, height: 80, borderRadius: 20, background: '#FEF3C7', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
+          <Clock size={36} color={T.gold} />
+        </div>
+        <h1 style={{ fontSize: 26, fontWeight: 800, color: T.text, marginBottom: 12 }}>Your membership is paused</h1>
+        <p style={{ fontSize: 15, color: T.sub, lineHeight: 1.6, maxWidth: 380, margin: '0 0 28px' }}>
+          {firstName}, your {saccoOrgName} membership has been temporarily suspended. Please contact the SACCO office
+          and they&rsquo;ll help you sort it out — your savings are safe in the meantime.
+        </p>
+        <button onClick={handleSignOut} style={{ padding: '12px 24px', borderRadius: 14, background: 'white', border: `1px solid ${T.border}`, color: T.sub, fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <LogOut size={16} /> Sign out
+        </button>
+      </>
+    );
+  }
+
+  if ((membershipStatus === 'pending' || membershipStatus === 'pending_approval') && (activationPayment || wallet?.is_active)) {
+    const paidAmount = activationPayment?.amount ? UGX(activationPayment.amount) : null;
+    const paidRef = activationPayment?.internal_reference || null;
+    const paidAt = activationPayment?.created_at ? new Date(activationPayment.created_at).toLocaleString('en-UG', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+    return gateShell(
+      <>
+        {/* Sticker stamp */}
+        <div style={{
+          transform: 'rotate(-4deg)', marginBottom: 28,
+          border: '3px dashed #3D9970', borderRadius: 18, padding: '10px 22px',
+          background: '#ECFDF5', color: '#166534', fontWeight: 900, fontSize: 15,
+          letterSpacing: '0.06em', textTransform: 'uppercase',
+          boxShadow: '0 4px 14px rgba(61,153,112,0.15)'
+        }}>
+          Payment received ✓
+        </div>
+
+        <h1 style={{ fontSize: 27, fontWeight: 800, color: T.text, marginBottom: 12, lineHeight: 1.25 }}>
+          You&rsquo;re on the list, {firstName}!
+        </h1>
+        <p style={{ fontSize: 15, color: T.sub, lineHeight: 1.65, maxWidth: 400, margin: '0 0 26px' }}>
+          Your activation payment{paidAmount ? <> of <strong style={{ color: T.text }}>{paidAmount}</strong></> : ''} went through.
+          The team at <strong>{saccoOrgName}</strong> now needs to let you in — an admin will approve your membership,
+          usually within a day{member?.phone ? <>, and we&rsquo;ll text you at <strong style={{ color: T.text }}>{member.phone}</strong> the moment the door opens</> : ''}.
+        </p>
+
+        {/* Journey checklist */}
+        <div style={{ width: '100%', maxWidth: 400, background: 'white', borderRadius: 22, border: `1px solid ${T.border}`, padding: '18px 20px', textAlign: 'left', marginBottom: 18, boxShadow: '0 4px 16px rgba(124,45,18,0.05)' }}>
+          {[
+            { label: 'Join the SACCO', done: true },
+            { label: paidAmount ? `Pay activation fee (${paidAmount})` : 'Pay activation fee', done: true },
+            { label: 'Admin lets you in', done: false, current: true },
+          ].map((step, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 0', borderBottom: i === 2 ? 'none' : `1px solid ${T.border}` }}>
+              <div style={{
+                width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+                background: step.done ? '#ECFDF5' : step.current ? '#FEF3C7' : '#F5F5F4',
+                display: 'flex', alignItems: 'center', justifyContent: 'center'
+              }}>
+                {step.done
+                  ? <CheckCircle size={16} color="#3D9970" />
+                  : <span style={{ width: 8, height: 8, borderRadius: '50%', background: step.current ? T.gold : T.ghost }} className={step.current ? 'animate-pulse' : ''} />}
+              </div>
+              <span style={{ fontSize: 14, fontWeight: step.current ? 800 : 600, color: step.done ? T.sub : step.current ? T.text : T.ghost, textDecoration: step.done && !step.current ? 'line-through' : 'none' }}>
+                {step.label}
+              </span>
+              {step.current && (
+                <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, color: T.gold, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Waiting
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Receipt line */}
+        {(paidAt || paidRef) && (
+          <p style={{ fontSize: 12, color: T.ghost, margin: '0 0 22px' }}>
+            {paidAt && <>Paid on {paidAt}</>}
+            {paidAt && paidRef && ' · '}
+            {paidRef && <>Ref {paidRef}</>}
+          </p>
+        )}
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={() => { setLoading(true); fetchData(); }} style={{ padding: '12px 22px', borderRadius: 14, background: `linear-gradient(135deg, ${T.cDeep}, ${T.cRich})`, border: 'none', color: 'white', fontWeight: 800, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, boxShadow: `0 6px 18px ${T.cDeep}30` }}>
+            Check again
+          </button>
+          <button onClick={handleSignOut} style={{ padding: '12px 22px', borderRadius: 14, background: 'white', border: `1px solid ${T.border}`, color: T.sub, fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <LogOut size={15} /> Sign out
+          </button>
+        </div>
+      </>
     );
   }
 
