@@ -16,7 +16,7 @@ const nextConfig = {
       },
     ],
   },
-  outputFileTracing: false,
+  outputFileTracing: true,
   experimental: {
     cpus: 1,
     workerThreads: false,
