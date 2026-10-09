@@ -175,17 +175,23 @@ export async function POST(req: Request) {
     // rolls back, so the member would be charged and never activated. Refuse
     // up front and tell the member to open a plan first.
     if (isMemberCaller && requestedType === 'account_activation') {
-      const { data: anyAcc } = await supabaseAdminLocal2
+      const { data: memberAccounts } = await supabaseAdminLocal2
         .schema('kunity')
         .from('accounts')
-        .select('id')
+        .select('id, is_active')
         .eq('member_id', authUser.id)
-        .eq('organization_id', resolvedOrgId)
-        .limit(1)
-        .maybeSingle();
-      if (!anyAcc) {
+        .eq('organization_id', resolvedOrgId);
+      if (!memberAccounts || memberAccounts.length === 0) {
         return NextResponse.json(
           { error: 'Open a savings plan first, then purchase the activation card.' },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+      // FIN-39: an already-activated member must not pay the activation fee
+      // again (it would be credited to their balance a second time).
+      if (memberAccounts.some((a: any) => a.is_active === true)) {
+        return NextResponse.json(
+          { error: 'Your account is already activated.' },
           { status: 400, headers: corsHeaders }
         );
       }

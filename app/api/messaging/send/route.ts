@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { messagingLimiter } from '@/lib/rate-limit';
@@ -52,23 +53,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Bad Request: "to" and "message" are required' }, { status: 400 });
     }
 
-    let tenant = null;
-    if (tenantCode) {
-      const { data: t, error: tenantErr } = await supabaseAdmin
-        .from('tenants')
-        .select('id, name, is_active')
-        .eq('code', tenantCode)
-        .eq('application_id', app.id)
-        .maybeSingle();
-
-      if (tenantErr || !t) {
-        return NextResponse.json({ error: 'Not Found: Invalid tenantCode for this application' }, { status: 404 });
-      }
-      if (!t.is_active) {
-        return NextResponse.json({ error: 'Forbidden: Tenant is not active' }, { status: 403 });
-      }
-      tenant = t;
+    // FIN-37: tenantCode is REQUIRED. Without it the message had no tenant to
+    // bill, so any application key could send SMS at the platform's expense.
+    if (!tenantCode) {
+      return NextResponse.json({ error: 'Bad Request: "tenantCode" is required' }, { status: 400 });
     }
+
+    const { data: t, error: tenantErr } = await supabaseAdmin
+      .from('tenants')
+      .select('id, name, is_active')
+      .eq('code', tenantCode)
+      .eq('application_id', app.id)
+      .maybeSingle();
+
+    if (tenantErr || !t) {
+      return NextResponse.json({ error: 'Not Found: Invalid tenantCode for this application' }, { status: 404 });
+    }
+    if (!t.is_active) {
+      return NextResponse.json({ error: 'Forbidden: Tenant is not active' }, { status: 403 });
+    }
+    const tenant = t;
 
     // 2. Format & Sanitize Phone Numbers
     const numbers = Array.isArray(to) ? to : [to];
@@ -101,6 +105,49 @@ export async function POST(req: NextRequest) {
       }, { status: 503 });
     }
 
+    // FIN-37: bill the tenant's SMS wallet BEFORE dispatch (same rate rules as
+    // lib/sms.ts). One idempotent debit covers the whole batch.
+    const segments = message.trim().length > 160 ? Math.ceil(message.trim().length / 153) : 1;
+    const { data: wallet } = await supabaseAdmin
+      .schema('public')
+      .from('wallets')
+      .select('id, balance, sms_rate')
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+
+    if (!wallet) {
+      return NextResponse.json({ error: 'SMS wallet not found for this tenant' }, { status: 402 });
+    }
+    const parsedRate = parseFloat(String(wallet.sms_rate ?? ''));
+    const costPerSms = Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : 50.0;
+    const totalCost = segments * costPerSms * normalizedNumbers.length;
+    if (parseFloat(String(wallet.balance)) < totalCost) {
+      return NextResponse.json({ error: 'Insufficient SMS wallet balance' }, { status: 402 });
+    }
+
+    const debitKey = `api_${crypto.randomUUID()}`;
+    const { error: debitErr } = await supabaseAdmin.rpc('debit_sms_wallet', {
+      p_wallet_id: wallet.id,
+      p_amount: totalCost,
+      p_idempotency_key: debitKey,
+      p_tenant_id: tenant.id,
+      p_description: `API SMS dispatch (${normalizedNumbers.length} recipient(s))`
+    });
+    if (debitErr) {
+      console.error('[messaging] wallet debit failed:', debitErr);
+      return NextResponse.json({ error: 'Insufficient SMS wallet balance' }, { status: 402 });
+    }
+
+    // Refund helper: used only when the provider definitively rejects the batch.
+    const refundBatch = async () => {
+      const { error: refundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
+        p_wallet_id: wallet.id,
+        p_amount: totalCost,
+        p_reference: `refund_${debitKey}`
+      });
+      if (refundErr) console.error('[messaging] refund failed, needs manual review:', refundErr);
+    };
+
     // Real Africastalking dispatch
     const url = atUsername === 'sandbox' 
       ? 'https://api.sandbox.africastalking.com/version1/messaging' 
@@ -125,6 +172,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!atResponse.ok) {
+      await refundBatch();
       const errText = await atResponse.text();
       console.error('[NaJiki Gateway] AfricasTalking HTTP error:', atResponse.status, errText);
       return NextResponse.json({
@@ -139,6 +187,7 @@ export async function POST(req: NextRequest) {
     const responses = atResult?.SMSMessageData?.Recipients || [];
     
     if (responses.length === 0) {
+      await refundBatch();
       const providerMsg = atResult?.SMSMessageData?.Message || 'No recipients processed by SMS provider';
       console.error('[NaJiki Gateway] AfricasTalking returned no recipients:', providerMsg);
       return NextResponse.json({

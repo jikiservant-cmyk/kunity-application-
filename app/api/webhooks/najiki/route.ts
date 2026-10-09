@@ -165,6 +165,15 @@ export async function POST(req: Request) {
 
     console.log('[Najiki Webhook] Success:', result);
 
+    // FIN-38: the ledger REJECTED this event (amount/currency mismatch, unknown
+    // reference, held payment type). Do not acknowledge with 200: the gateway
+    // would stop retrying and nothing would alert anyone. A non-2xx keeps the
+    // event in the gateway's retry/alert queue until ops resolve it.
+    if (result && result.success === false) {
+      console.error('[Najiki Webhook] Rejected by ledger:', result);
+      return NextResponse.json({ error: result.error || 'Rejected', data: result }, { status: 409 });
+    }
+
     // 3. If newly processed successful deposit, send an automated SMS notification
     if (result && result.message === 'Success recorded. Journal entries created.') {
       try {
