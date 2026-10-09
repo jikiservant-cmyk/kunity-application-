@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { profileUpdateLimiter } from '@/lib/rate-limit';
+import { normalizeJoinCode } from '@/lib/join-code';
 
 export async function POST(req: NextRequest) {
   try {
@@ -59,7 +60,8 @@ export async function POST(req: NextRequest) {
     const { 
       userId, 
       fullName, 
-      orgId, 
+      orgId: requestedOrgId,
+      joinCode,
       email, 
       phone,
       gender,
@@ -80,25 +82,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!orgId) {
-      return NextResponse.json({ error: 'Missing required parameter: orgId' }, { status: 400 });
+    // 4. Tenant Verification (join-link based)
+    // The SACCO is taken ONLY from the join code. Clients can't pick a SACCO by
+    // ID, so every member joins the SACCO whose link they were given.
+    const normalizedCode = normalizeJoinCode(joinCode);
+    if (!normalizedCode) {
+      return NextResponse.json({ error: 'A valid SACCO join link is required to register.' }, { status: 400 });
     }
 
-    // 4. Tenant Verification
-    // Verify that the requested SACCO organization actually exists and is active
     const { data: targetOrg, error: orgErr } = await supabaseAdmin
       .schema('kunity')
       .from('organizations')
       .select('id, name, is_active')
-      .eq('id', orgId)
+      .eq('join_code', normalizedCode)
       .maybeSingle();
 
     if (orgErr || !targetOrg) {
-      return NextResponse.json({ error: 'Invalid organization: Target SACCO not found' }, { status: 404 });
+      return NextResponse.json({ error: 'Invalid join link: SACCO not found' }, { status: 404 });
     }
 
     if (!targetOrg.is_active) {
       return NextResponse.json({ error: 'Forbidden: Selected SACCO organization is inactive' }, { status: 403 });
+    }
+
+    const orgId: string = targetOrg.id;
+
+    // Any orgId sent by the client must agree with the join code.
+    if (requestedOrgId && requestedOrgId !== orgId) {
+      return NextResponse.json(
+        { error: 'Forbidden: Organization does not match the join link' },
+        { status: 403 }
+      );
     }
 
     // If signup metadata specified a tenant_id, ensure orgId matches

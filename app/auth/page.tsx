@@ -12,7 +12,7 @@ function AuthContent() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
 
   useEffect(() => {
-    if (searchParams.get('mode') === 'register') {
+    if (searchParams.get('mode') === 'register' || searchParams.get('sacco')) {
       queueMicrotask(() => setMode('register'));
     }
   }, [searchParams]);
@@ -32,41 +32,40 @@ function AuthContent() {
   const [error, setError] = useState('');
   const [registeredUserId, setRegisteredUserId] = useState<string | null>(null);
 
-  const [organizations, setOrganizations] = useState<any[]>([]);
-
-  const loadOrgs = async () => {
-    console.log("🚀 loadOrgs starting...");
-    try {
-      const response = await fetch('/api/organizations');
-      if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
-      }
-      const data = await response.json();
-      if (data.error) {
-        throw new Error(data.error);
-      }
-      const orgs = data.organizations || [];
-      console.log("✅ loadOrgs - orgs loaded from API:", orgs);
-      
-      if (orgs.length > 0) {
-        setOrganizations(orgs);
-        setOrgId(orgs[0].id);
-      } else {
-        setOrganizations([]);
-        setError("Could not load cooperatives: No registered SACCOs found.");
-      }
-    } catch (err: any) {
-      console.error("❌ loadOrgs failed:", err);
-      setOrganizations([]);
-      setError("Could not load cooperatives. " + (err.message || ""));
-    }
-  };
+  // Join-link registration: /auth?sacco=<code>. The code is resolved by the
+  // server to one SACCO, which is then locked for the member. The old public
+  // list of all SACCOs has been removed.
+  const [joinCode, setJoinCode] = useState<string | null>(null);
+  const [orgName, setOrgName] = useState('');
 
   useEffect(() => {
-    if (step === 2) {
-      queueMicrotask(() => loadOrgs());
+    const code = searchParams.get('sacco');
+    if (!code) {
+      return;
     }
-  }, [step]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/organizations/resolve?code=${encodeURIComponent(code)}`);
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok || !data.organization) {
+          setError(data.error || 'This join link is not valid. Ask your SACCO for a new link.');
+          setOrgId(null);
+          setOrgName('');
+          setJoinCode(null);
+        } else {
+          setOrgId(data.organization.id);
+          setOrgName(data.organization.name);
+          setJoinCode(code.trim().toUpperCase().replace(/[\s-]/g, ''));
+          setError('');
+        }
+      } catch {
+        if (!cancelled) setError('Could not check this join link. Please try again.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [searchParams]);
 
 
 
@@ -78,6 +77,11 @@ function AuthContent() {
 
     try {
       if (mode === 'register') {
+        if (!orgId || !joinCode) {
+          setError("You need your SACCO's join link to register. Ask your SACCO admin to send it to you.");
+          setLoading(false);
+          return;
+        }
         const phoneRegex = /^0[0-9]{9}$/;
         const nationalIdRegex = /^(CM|CF|RM|RF)[A-Z0-9]{12}$/i;
 
@@ -93,8 +97,8 @@ function AuthContent() {
           setLoading(false);
           return;
         } else if (step === 2) {
-          if (!orgId) {
-            setError("Please select a Cooperative / Sacco to join.");
+          if (!orgId || !joinCode) {
+            setError("You need your SACCO's join link to register.");
             setLoading(false);
             return;
           }
@@ -158,6 +162,7 @@ function AuthContent() {
                 userId: data.user.id,
                 fullName,
                 orgId,
+                joinCode,
                 email,
                 phone,
                 gender,
@@ -403,33 +408,13 @@ function AuthContent() {
                   </div>
                 </div>
 
-                {organizations.length > 0 ? (
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-semibold" style={{ color: T.text }}>Select Cooperative / Sacco</label>
-                    <div className="relative">
-                      <select
-                        value={orgId || ''}
-                        onChange={(e) => setOrgId(e.target.value)}
-                        required
-                        className="w-full px-4 py-3.5 rounded-2xl outline-none transition-all appearance-none cursor-pointer focus:ring-4"
-                        style={{ backgroundColor: T.card, border: `1px solid ${T.border}`, color: T.text, outline: 'none' }}
-                      >
-                        {organizations.map(org => (
-                          <option key={org.id} value={org.id}>
-                            {org.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none" style={{ color: T.sub }}>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                      </div>
-                    </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-semibold" style={{ color: T.text }}>Cooperative / Sacco</label>
+                  <div className="px-4 py-3.5 rounded-2xl font-bold" style={{ backgroundColor: T.card, border: `1px solid ${T.border}`, color: T.text }}>
+                    {orgName || 'Your SACCO'}
                   </div>
-                ) : (
-                  <div className="p-4 bg-blue-50 text-blue-600 text-sm rounded-2xl border border-blue-100 font-medium">
-                    Loading cooperatives...
-                  </div>
-                )}
+                  <span className="text-xs" style={{ color: T.sub }}>You are joining this SACCO through its invite link.</span>
+                </div>
               </>
             )}
             

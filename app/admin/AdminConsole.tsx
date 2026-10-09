@@ -90,6 +90,9 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [allOrganizations, setAllOrganizations] = useState<any[]>([]);
   const [showOrgDropdown, setShowOrgDropdown] = useState(false);
   const [apiKey, setApiKey] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [joinLink, setJoinLink] = useState('');
+  const [joinCodeBusy, setJoinCodeBusy] = useState(false);
 
   // Tenant-Scoped Metrics
   const [stats, setStats] = useState({
@@ -166,7 +169,51 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     return 'Good evening';
   }, []);
 
+  // Member join link (Settings tab). action: 'get' | 'regenerate'.
+  const loadJoinCode = async (action: 'get' | 'regenerate' = 'get') => {
+    try {
+      setJoinCodeBusy(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch('/api/admin/join-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: session.access_token, action, organizationId: orgId || undefined }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setJoinCode(data.joinCode);
+        setJoinLink(`${window.location.origin}/auth?sacco=${data.joinCode}`);
+        if (action === 'regenerate') {
+          setToastMessage({ type: 'success', text: 'New join link created. The old link no longer works.' });
+        }
+      } else {
+        setToastMessage({ type: 'error', text: data.error || 'Could not load the join link' });
+      }
+    } catch {
+      setToastMessage({ type: 'error', text: 'Could not load the join link' });
+    } finally {
+      setJoinCodeBusy(false);
+    }
+  };
+
+  const copyJoinLink = async () => {
+    try {
+      await navigator.clipboard.writeText(joinLink);
+      setToastMessage({ type: 'success', text: 'Join link copied. Share it with your members.' });
+    } catch {
+      setToastMessage({ type: 'error', text: 'Could not copy. Select the link and copy it manually.' });
+    }
+  };
+
   // Fetch Admin Data from Tenant-Scoped API
+  useEffect(() => {
+    if (activeTab === 'tenant' && orgId) {
+      queueMicrotask(() => loadJoinCode('get'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, orgId]);
+
   const fetchAdminData = async () => {
     try {
       setRefreshing(true);
@@ -1854,6 +1901,32 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
               <p style={{ fontSize: 13, color: T.sub, marginTop: 4, margin: 0 }}>
                 Technical identifiers, database schema partitioning, and cryptographic API tokens.
               </p>
+            </div>
+
+            <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '20px 24px', border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 800 }}>Member Join Link</span>
+                <p style={{ fontSize: 13, color: T.sub, margin: '4px 0 0' }}>
+                  Send this link to members. Anyone who signs up with it joins your SACCO and waits for your approval.
+                  Regenerating it stops the old link from working. Members already registered are not affected.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <code style={{ flex: 1, minWidth: 240, padding: '10px 14px', borderRadius: 12, background: '#fff', border: `1px solid ${T.border}`, fontSize: 13, color: T.text, wordBreak: 'break-all' }}>
+                  {joinLink || (joinCodeBusy ? 'Loading…' : 'Not available')}
+                </code>
+                <button onClick={copyJoinLink} disabled={!joinLink || joinCodeBusy} style={{ padding: '10px 16px', borderRadius: 12, border: 'none', background: T.cMid, color: '#fff', fontWeight: 800, cursor: joinLink ? 'pointer' : 'not-allowed', opacity: joinLink ? 1 : 0.5 }}>
+                  Copy link
+                </button>
+                <button onClick={() => {
+                  if (window.confirm('Create a new join link? The current link will stop working immediately.')) {
+                    loadJoinCode('regenerate');
+                  }
+                }} disabled={!joinLink || joinCodeBusy} style={{ padding: '10px 16px', borderRadius: 12, border: `1px solid ${T.border}`, background: '#fff', color: T.text, fontWeight: 800, cursor: joinLink ? 'pointer' : 'not-allowed' }}>
+                  Regenerate
+                </button>
+              </div>
+              {joinCode && <span style={{ fontSize: 11, color: T.ghost }}>Join code: {joinCode}</span>}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 18 }}>
