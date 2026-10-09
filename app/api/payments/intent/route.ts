@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { activationBlockReason } from '@/lib/activation-guard';
 import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
@@ -117,7 +118,7 @@ export async function POST(req: Request) {
     const { data: callerMember } = await supabaseAdminLocal2
       .schema('kunity')
       .from('members')
-      .select('id, organization_id')
+      .select('id, organization_id, status')
       .eq('id', authUser.id)
       .maybeSingle();
 
@@ -175,6 +176,28 @@ export async function POST(req: Request) {
     // rolls back, so the member would be charged and never activated. Refuse
     // up front and tell the member to open a plan first.
     if (isMemberCaller && requestedType === 'account_activation') {
+      // FIN-40: declined/suspended members and members with an activation
+      // payment already in progress may not start another one.
+      const { data: pendingActivation } = await supabaseAdminLocal2
+        .schema('kunity')
+        .from('payment_requests')
+        .select('created_at')
+        .eq('member_id', authUser.id)
+        .eq('organization_id', resolvedOrgId)
+        .eq('payment_type', 'account_activation')
+        .in('status', ['pending', 'processing'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const blockReason = activationBlockReason({
+        memberStatus: callerMember?.status,
+        pendingActivationCreatedAt: pendingActivation?.created_at ?? null,
+        now: Date.now(),
+      });
+      if (blockReason) {
+        return NextResponse.json({ error: blockReason }, { status: 409, headers: corsHeaders });
+      }
+
       const { data: memberAccounts } = await supabaseAdminLocal2
         .schema('kunity')
         .from('accounts')
