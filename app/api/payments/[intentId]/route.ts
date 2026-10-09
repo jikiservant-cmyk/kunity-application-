@@ -32,12 +32,25 @@ export async function GET(
     const { data: requestRecord } = await supabaseAdmin
       .schema('kunity')
       .from('payment_requests')
-      .select('member_id')
+      .select('member_id, status')
       .eq('internal_reference', intentId)
       .maybeSingle();
 
     if (!requestRecord || requestRecord.member_id !== authUser.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // FIN-35: our ledger is the source of truth for "paid". The gateway can
+    // report success before the webhook has credited the member and activated
+    // the account, so the app must not show "activated" from the gateway alone.
+    // Only report success once the database says so; while the gateway says
+    // success but our webhook hasn't landed yet, report 'processing'.
+    const dbStatus = String(requestRecord.status || '').toLowerCase();
+    if (dbStatus === 'success' || dbStatus === 'successful') {
+      return NextResponse.json({ status: 'success', source: 'ledger' });
+    }
+    if (dbStatus === 'failed') {
+      return NextResponse.json({ status: 'failed', source: 'ledger' });
     }
 
     const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
@@ -55,6 +68,10 @@ export async function GET(
       );
     }
     const data = await response.json();
+    const gatewayStatus = String(data?.status || '').toLowerCase();
+    if (gatewayStatus === 'success' || gatewayStatus === 'successful') {
+      return NextResponse.json({ ...data, status: 'processing', source: 'gateway' });
+    }
     return NextResponse.json(data);
   } catch (err: any) {
     console.error("Error fetching payment status:", err);

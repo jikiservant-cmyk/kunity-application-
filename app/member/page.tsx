@@ -362,32 +362,34 @@ export default function MemberDashboard() {
           
         isActivated = paymentData !== null && paymentData.length > 0;
         
-        // If failsafe check passes, automatically activate the accounts and reload data
+        // FIN-34: if a successful activation payment exists, ask the server to
+        // reconcile the accounts (service role). The browser can no longer write
+        // member_savings / accounts directly.
         if (isActivated) {
-          await supabase.schema('kunity')
-            .from('member_savings')
-            .update({ status: 'active' })
-            .eq('member_id', memberData.id)
-            .eq('organization_id', memberData.organization_id);
-            
-          await supabase.schema('kunity')
-            .from('accounts')
-            .update({ is_active: true })
-            .eq('member_id', memberData.id)
-            .eq('organization_id', memberData.organization_id);
-            
-          // Reload accounts data after activation!
+          try {
+            const { data: { session: s2 } } = await supabase.auth.getSession();
+            if (s2) {
+              await fetch('/api/member/activation-sync', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${s2.access_token}` }
+              });
+            }
+          } catch (e) {
+            console.error('Activation sync failed:', e);
+          }
+
           const { data: msDataReloaded } = await supabase.schema('kunity')
             .from('member_savings')
             .select('*, account:accounts(*), savings_product:savings_products(name, interest_rate)')
             .eq('member_id', memberData.id);
-          
+
           accountsData = msDataReloaded?.map((ms: any) => ({
             ...ms.account,
             savings_product: ms.savings_product,
             savings_product_id: ms.savings_product_id,
             status: ms.status
           })) || [];
+          isActivated = accountsData.some((a: any) => a.is_active === true && a.status === 'active');
         }
       }
       
@@ -431,103 +433,37 @@ export default function MemberDashboard() {
   const handleOpenAccount = async (productId: string, productName: string) => {
     setActionLoading(true);
     try {
-      // 1. Try to find existing member_savings linked to an account
-      const { data: existingMs } = await supabase.schema('kunity')
-        .from('member_savings')
-        .select('id, account_id, accounts!inner(is_active, deleted_at)')
-        .eq('organization_id', member.organization_id)
-        .eq('member_id', member.id)
-        .eq('savings_product_id', productId)
-        .is('deleted_at', null)
-        .limit(1)
-        .maybeSingle();
-
-      if (!existingMs) {
-        // 2. Insert new account in kunity.accounts
-        const { data: newAccount, error: accountError } = await supabase.schema('kunity').from('accounts').insert({
-          organization_id: member.organization_id,
-          member_id: member.id,
-          name: productName,
-          account_category: 'asset',
-          code: `SAV-${Math.floor(100000 + Math.random() * 900000)}`,
-          is_active: false,
-          cached_balance: 0.00,
-          currency: 'UGX',
-          is_system: false
-        }).select('id').single();
-        
-        if (accountError) throw accountError;
-        
-        if (newAccount) {
-          // 3. Create member_savings connection linking accounts and savings_products
-          const { error: msError } = await supabase.schema('kunity').from('member_savings').insert({
-            organization_id: member.organization_id,
-            member_id: member.id,
-            savings_product_id: productId,
-            account_id: newAccount.id,
-            status: 'frozen',
-            opened_date: new Date().toISOString().split('T')[0]
-          });
-          if (msError) throw msError;
-        }
+      // FIN-33: accounts are created by the server (service role). The browser
+      // cannot INSERT into kunity.accounts / member_savings (lockdown revokes it).
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert("Your session has expired. Please log in again.");
+        router.push('/auth');
+        return;
       }
-      
+      const res = await fetch('/api/member/open-account', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ productId, productName })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || 'Could not open this plan.');
+      }
+
       await fetchData();
-      alert(existingMs ? `You already have a ${productName} account.` : `Account created: ${productName}. To activate this plan and unlock your dashboard, please purchase a Virtual Account Card.`);
+      alert(json.alreadyOpen
+        ? `You already have a ${productName} account.`
+        : `Account created: ${productName}. To activate this plan and unlock your dashboard, please purchase a Virtual Account Card.`);
     } catch (e: any) {
       alert("Error: " + e.message);
     } finally {
       setActionLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!promptPayment || promptPayment.status !== 'pending') return;
-
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      attempts++;
-      try {
-        // SECURITY/FIX: /api/payments/[intentId] requires a Bearer session token.
-        // Resolve the session on every poll so a refreshed token is used.
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return; // Session expired — stop polling silently; middleware will force re-login.
-        const response = await fetch(`/api/payments/${promptPayment.id}`, {
-          headers: { 'Authorization': `Bearer ${session.access_token}` }
-        });
-        if (response.ok) {
-          const payment = await response.json();
-          const statusLower = (payment.status || '').toLowerCase();
-          const isSuccess = statusLower === 'success' || statusLower === 'successful';
-          const isPending = statusLower === 'pending' || statusLower === 'processing';
-
-          if (isSuccess) {
-            clearInterval(interval);
-            setPromptPayment(prev => prev ? { ...prev, status: 'success' } : null);
-            fetchData();
-          } else if (!isPending) {
-            clearInterval(interval);
-            setPromptPayment(prev => prev ? { ...prev, status: 'failed' } : null);
-          }
-        }
-      } catch (e) {
-        console.error("Error polling payment intent status:", e);
-      }
-
-      if (attempts >= 60) { // 2 minutes timeout
-        clearInterval(interval);
-        setPromptPayment(prev => prev ? { ...prev, status: 'failed' } : null);
-      }
-    }, 2000);
-
-    return () => clearInterval(interval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptPayment?.id, promptPayment?.status]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();

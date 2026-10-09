@@ -170,6 +170,27 @@ export async function POST(req: Request) {
         { status: 400, headers: corsHeaders }
       );
     }
+    // FIN-36: an activation payment needs a savings account to post into. If
+    // the member has none, the payment webhook cannot record the money and
+    // rolls back, so the member would be charged and never activated. Refuse
+    // up front and tell the member to open a plan first.
+    if (isMemberCaller && requestedType === 'account_activation') {
+      const { data: anyAcc } = await supabaseAdminLocal2
+        .schema('kunity')
+        .from('accounts')
+        .select('id')
+        .eq('member_id', authUser.id)
+        .eq('organization_id', resolvedOrgId)
+        .limit(1)
+        .maybeSingle();
+      if (!anyAcc) {
+        return NextResponse.json(
+          { error: 'Open a savings plan first, then purchase the activation card.' },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+    }
+
     // Admin BUY_SMS topups keep their own type (credited via wallet_transactions).
 
     // FIN-31b: enforce the member minimums SERVER-SIDE. The member app only
