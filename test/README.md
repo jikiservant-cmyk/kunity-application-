@@ -66,6 +66,9 @@ no Docker needed) and proves both halves of the financial-integrity work:
   FIN-01 … FIN-19 live: broken repayment SQL, amount-drift acceptance,
   vanishing activation money, unbalanced journals, negative SMS wallets,
   dead wallet RPCs, cross-wallet credits, …
+- **Phase 3 (4 checks)** — applies `supabase/migrations/22_repayment_paid_to_date_fix.sql`
+  and verifies loan repayments count interest toward the loan total (an
+  interest-only tail completes the loan; over-payment is rejected).
 - **Phase 2 (22 checks)** — applies `supabase/migrations/21_financial_integrity.sql`
   and verifies every fix: balanced double-entry journals, float maintained on
   EXTERNAL cash movements only (loans are internal transfers via the

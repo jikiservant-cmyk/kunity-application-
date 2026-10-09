@@ -194,9 +194,13 @@ export async function sendSms({
     }
 
     // 3. Deduct balance directly from public.wallets with deterministic idempotency key
-    const resolvedIdempotencyKey = idempotencyKey 
-      ? `debit_${idempotencyKey}` 
-      : `debit_${crypto.createHash('sha256').update(`${tenantId}:${cleanPhone}:${eventType}:${finalMessage}`).digest('hex').substring(0, 32)}`;
+    // FIN-32: never derive the debit key from message CONTENT. A content hash
+    // makes an identical message to the same phone look like a replay, so the
+    // second send went out without being charged. Callers that need retry
+    // safety pass a stable idempotencyKey (the Inngest event id does this).
+    const resolvedIdempotencyKey = idempotencyKey
+      ? `debit_${idempotencyKey}`
+      : `debit_${crypto.randomUUID()}`;
 
     const { data: debitResult, error: debitErr } = await supabaseAdmin
       .rpc('debit_sms_wallet', {
@@ -279,9 +283,8 @@ export async function sendSms({
         // `p_idempotency_key` parameter that function does not accept — the RPC
         // lookup always failed, so failed SMS were debited but NEVER refunded.
         // Use the dedicated idempotent refund RPC instead.
-        const refundReference = idempotencyKey
-          ? `refund_${idempotencyKey}`
-          : `refund_${crypto.createHash('sha256').update(`${tenantId}:${cleanPhone}:${eventType}:${finalMessage}`).digest('hex').substring(0, 32)}`;
+        // Tied to the debit key so each refund maps to exactly one charge.
+        const refundReference = `refund_${resolvedIdempotencyKey}`;
 
         const { data: refundResult, error: refundErr } = await supabaseAdmin
           .rpc('refund_sms_wallet', {

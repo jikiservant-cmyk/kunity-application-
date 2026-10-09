@@ -689,6 +689,60 @@ async function phase2_fixes(db) {
     `afterDebit=${txtDebit.balance} afterCredit=${txtCredit.balance} final=${w1} insuffErr=${!!txtInsufficient}`);
 }
 
+
+// ===========================================================================
+// PHASE 3 — 22_repayment_paid_to_date_fix.sql: loan totals include interest
+// ===========================================================================
+async function phase3_repayment(db) {
+  console.log('\n══════════════════════════════════════════════════════');
+  console.log('PHASE 3 — 22_repayment_paid_to_date_fix.sql: repayment totals');
+  console.log('══════════════════════════════════════════════════════');
+  await db.exec(read(join(MIG, '22_repayment_paid_to_date_fix.sql')));
+
+  const repay = (amt) => q(db, `SELECT kunity.member_repay_loan_atomic('${M_ACTIVE}','${ORG}','${ACC_MAIN}','${LOAN_1}', ${amt})`);
+  const loanStatus = () => scalar(db, `SELECT status FROM kunity.loans WHERE id='${LOAN_1}'`);
+  const newLoan = async () => {
+    await seedFixtures(db);
+    await q(db, `SELECT kunity.disburse_loan_atomic('${LOAN_1}','${ORG}','${M_ACTIVE}', 100000)`);
+  };
+  const tryRepay = async (amt) => { try { await repay(amt); return null; } catch (e) { return e; } };
+
+  // R1: 105000 (principal + 5000 interest), then exact 5000 remaining -> completed
+  await newLoan();
+  const e1a = await tryRepay(105000);
+  const e1b = await tryRepay(5000);
+  const s1 = await loanStatus();
+  record('R1 FIN-27b: interest-only tail completes the loan (paid 110000 of 110000)',
+    !e1a && !e1b && s1 === 'completed', `ea=${!!e1a} eb=${!!e1b} status=${s1}`);
+
+  // R2: 105000 then 10000 (only 5000 owed) -> over-payment rejected, loan stays open
+  await newLoan();
+  await tryRepay(105000);
+  const e2 = await tryRepay(10000);
+  const s2 = await loanStatus();
+  const intPaid2 = await scalar(db, `SELECT COALESCE(SUM(interest_paid),0) FROM kunity.loan_repayments WHERE loan_id='${LOAN_1}'`);
+  record('R2 FIN-27b: over-payment beyond total owed REJECTED (no excess booked as interest)',
+    !!e2 && /exceeds remaining/i.test(e2.message) && s2 === 'approved' && parseFloat(intPaid2) === 5000,
+    `err=${e2 ? e2.message.slice(0, 40) : 'none'} status=${s2} interestPaid=${intPaid2}`);
+
+  // R3: 105000 then 6000 (only 5000 owed) -> rejected; exact 5000 still allowed
+  await newLoan();
+  await tryRepay(105000);
+  const e3 = await tryRepay(6000);
+  const e3ok = await tryRepay(5000);
+  const s3 = await loanStatus();
+  record('R3 FIN-27b: after interest-only payment, only the true remainder is accepted',
+    !!e3 && !e3ok && s3 === 'completed', `over=${!!e3} exact=${!e3ok} status=${s3}`);
+
+  // R4: a single payment of the full total completes the loan exactly
+  await newLoan();
+  const e4 = await tryRepay(110000);
+  const s4 = await loanStatus();
+  const over4 = await tryRepay(1000);
+  record('R4 FIN-27b: full-total single payment completes; further payments rejected',
+    !e4 && s4 === 'completed' && !!over4, `ea=${!!e4} status=${s4} furtherRejected=${!!over4}`);
+}
+
 // ===========================================================================
 (async () => {
   console.log('Starting real-PostgreSQL financial verification (PGlite / PG 17)...');
@@ -697,6 +751,7 @@ async function phase2_fixes(db) {
 
   await phase1_bugs(db);
   await phase2_fixes(db);
+  await phase3_repayment(db);
 
   const failed = results.filter(r => !r.pass);
   console.log('\n══════════════════════════════════════════════════════');

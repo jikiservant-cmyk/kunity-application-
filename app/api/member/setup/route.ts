@@ -58,29 +58,52 @@ export async function POST(req: NextRequest) {
       productId = productsData[0].id;
     }
 
-    // 2. Ensure an active account exists
-    let { data: activeAccounts } = await supabaseAdminLocal.schema('kunity').from('accounts').select('*').eq('member_id', member.id).eq('is_active', true);
-    
-    if (!activeAccounts || activeAccounts.length === 0) {
-      const { data: newAccount } = await supabaseAdminLocal.schema('kunity').from('accounts').insert({
-        organization_id: member.organization_id,
-        member_id: member.id,
-        code: `ACC-${Math.floor(1000 + Math.random() * 9000)}`,
-        name: 'Main Wallet',
-        is_active: true,
-        account_category: 'liability',
-        cached_balance: 0
-      }).select('*').single();
-      
-      if (newAccount && productId) {
-        await supabaseAdminLocal.schema('kunity').from('member_savings').insert({
+    // 2. Ensure the member has a savings account. FIN-31: the account is
+    //    created INACTIVE and FROZEN, exactly like /api/member/open-account.
+    //    It only becomes usable when the activation payment is recorded by the
+    //    payment webhook. (Previously this created an is_active=true account
+    //    for ANY caller, letting members skip the activation fee and receive
+    //    loan proceeds into an account that was never paid for.)
+    const { data: anyAccount } = await supabaseAdminLocal
+      .schema('kunity')
+      .from('accounts')
+      .select('id')
+      .eq('member_id', member.id)
+      .limit(1)
+      .maybeSingle();
+
+    if (!anyAccount && productId) {
+      const { data: newAccount, error: accountError } = await supabaseAdminLocal
+        .schema('kunity')
+        .from('accounts')
+        .insert({
           organization_id: member.organization_id,
           member_id: member.id,
-          product_id: productId,
+          code: `ACC-${Math.floor(1000 + Math.random() * 9000)}`,
+          name: 'Main Wallet',
+          is_active: false,
+          account_category: 'liability',
+          cached_balance: 0,
+          currency: 'UGX',
+          is_system: false
+        })
+        .select('id')
+        .single();
+
+      if (accountError) throw accountError;
+
+      const { error: msError } = await supabaseAdminLocal
+        .schema('kunity')
+        .from('member_savings')
+        .insert({
+          organization_id: member.organization_id,
+          member_id: member.id,
+          savings_product_id: productId,
           account_id: newAccount.id,
-          status: 'active'
+          status: 'frozen',
+          opened_date: new Date().toISOString().split('T')[0]
         });
-      }
+      if (msError) throw msError;
     }
 
     return NextResponse.json({ success: true });

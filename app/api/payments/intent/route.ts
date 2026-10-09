@@ -172,6 +172,20 @@ export async function POST(req: Request) {
     }
     // Admin BUY_SMS topups keep their own type (credited via wallet_transactions).
 
+    // FIN-31b: enforce the member minimums SERVER-SIDE. The member app only
+    // enforces them in the browser, so a direct API call could activate an
+    // account (or make a deposit) for any amount, e.g. UGX 1.
+    const MEMBER_MIN_AMOUNTS: Record<string, number> = {
+      account_activation: 5000,
+      deposit: 2000,
+    };
+    if (isMemberCaller && numericAmount < (MEMBER_MIN_AMOUNTS[requestedType] ?? 0)) {
+      return NextResponse.json(
+        { error: `Minimum ${requestedType === 'account_activation' ? 'activation fee' : 'deposit'} is UGX ${MEMBER_MIN_AMOUNTS[requestedType].toLocaleString()}` },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
     // Fetch tenant code from public.tenants
     let tenantCode = finalOrganizationId;
     {
