@@ -76,6 +76,21 @@ async function main() {
                  VALUES ('${ORG}', '${M.refStyle}', 5000, 'success', NULL, 'PAY-ACT-XYZ')`);
   record('PAY-ACT- reference also activates', (await status(M.refStyle)) === 'active');
 
+  // Stored-request rules (the trigger never trusts anything else).
+  const pendingCase = '22222222-0000-0000-0000-000000000009';
+  await db.exec(`INSERT INTO kunity.members (id, organization_id, status, first_name) VALUES ('${pendingCase}', '${ORG}', 'pending', 'Rules')`);
+  const attempt = async (ref, type, amount, currency, direction) => {
+    await db.exec(`INSERT INTO kunity.payment_requests (organization_id, member_id, amount, currency, status, payment_type, internal_reference, direction)
+                   VALUES ('${ORG}', '${pendingCase}', ${amount}, '${currency}', 'pending', '${type}', '${ref}', '${direction}')`);
+    await db.exec(`UPDATE kunity.payment_requests SET status='success' WHERE internal_reference='${ref}'`);
+    const st = await status(pendingCase);
+    return st;
+  };
+  record('underpaid activation (1,000 < 5,000) does NOT activate', (await attempt('U-1', 'account_activation', 1000, 'UGX', 'inbound')) === 'pending');
+  record('activation in USD does NOT activate', (await attempt('U-2', 'account_activation', 5000, 'USD', 'inbound')) === 'pending');
+  record('outbound activation does NOT activate', (await attempt('U-3', 'account_activation', 5000, 'UGX', 'outbound')) === 'pending');
+  record('qualifying activation (5,000 UGX inbound) activates', (await attempt('U-4', 'account_activation', 5000, 'UGX', 'inbound')) === 'active');
+
   await db.exec(`UPDATE kunity.payment_requests SET status='failed' WHERE internal_reference='PAY-J1'`);
   // (member already active; the trigger must not touch anything else)
   record('a later status change does not re-run activation on other members', (await status(M.depositOnly)) === 'pending');
