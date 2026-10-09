@@ -65,6 +65,30 @@ export async function POST(req: NextRequest) {
 
     const effectiveOrgId = member.organization_id;
 
+    // Join approval has been removed: a new member becomes active automatically
+    // when their activation fee is paid (migration 25). Approving a pending
+    // member here would activate accounts WITHOUT payment, so it is refused.
+    // Any approve (incl. reinstating a suspended member) requires a recorded,
+    // successful activation payment. Otherwise activation would be free.
+    if (action === 'approve') {
+      const { data: paidFee } = await supabaseAdmin
+        .schema('kunity')
+        .from('payment_requests')
+        .select('id')
+        .eq('member_id', memberId)
+        .eq('organization_id', member.organization_id)
+        .eq('status', 'success')
+        .or('payment_type.eq.account_activation,internal_reference.like.PAY-ACT-%')
+        .limit(1)
+        .maybeSingle();
+      if (!paidFee) {
+        return NextResponse.json(
+          { error: 'This member has not paid the activation fee yet. They become active automatically when they pay.' },
+          { status: 400 }
+        );
+      }
+    }
+
     if (action === 'approve') {
       // 1. Update member status to 'active' scoped to member's organization
       const { error: updateErr } = await supabaseAdmin

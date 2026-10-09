@@ -737,43 +737,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
                   <p style={{ fontSize: 13, color: T.sub, marginTop: 8, lineHeight: 1.5 }}>
                     {pendingMembersList.length > 0 
-                      ? `${pendingMembersList.length} applicant${pendingMembersList.length > 1 ? 's' : ''} awaiting board review and account activation.`
+                      ? `${pendingMembersList.length} new member${pendingMembersList.length > 1 ? 's' : ''} have not paid the activation fee yet. They become active automatically when they pay.`
                       : "All member applications for this cooperative are verified and active."}
                   </p>
 
-                  {/* Top pending applicant preview */}
-                  {pendingMembersList.length > 0 && (
-                    <div style={{
-                      backgroundColor: '#FCFAEE', borderRadius: 16, padding: '14px 16px',
-                      border: `1px solid ${T.border}`, marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{ width: 36, height: 36, borderRadius: '50%', background: T.cMid, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 13 }}>
-                          {pendingMembersList[0].first_name?.charAt(0) || 'M'}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 800, color: T.text }}>
-                            {pendingMembersList[0].first_name} {pendingMembersList[0].last_name}
-                          </div>
-                          <div style={{ fontSize: 11, color: T.sub }}>
-                            Phone: {pendingMembersList[0].phone || 'N/A'} &bull; NIN: {pendingMembersList[0].national_id || 'Pending'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => handleMemberAction(pendingMembersList[0].id, 'approve')}
-                        disabled={processingMemberId === pendingMembersList[0].id}
-                        style={{
-                          padding: '6px 14px', borderRadius: 10,
-                          backgroundColor: T.green, color: 'white',
-                          border: 'none', fontWeight: 800, fontSize: 12, cursor: 'pointer'
-                        }}
-                      >
-                        {processingMemberId === pendingMembersList[0].id ? 'Approving...' : 'Approve'}
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
@@ -1195,10 +1162,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                   Cooperative Governance & Compliance
                 </span>
                 <h2 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, margin: '6px 0 0', color: 'white' }}>
-                  Member KYC & Account Approval Queue
+                  New Members Awaiting Activation
                 </h2>
                 <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', marginTop: 4, margin: 0, maxWidth: 540 }}>
-                  Review submitted applicant dossiers, verify National Identification Numbers (NIN), next-of-kin records, and authorize SACCO wallet creation.
+New members become active automatically when they pay the activation fee. Decline blocks an applicant, so a later payment will not activate them.
                 </p>
               </div>
 
@@ -1288,29 +1255,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                           }}
                         >
                           Decline
-                        </button>
-                        <button
-                          onClick={() => handleMemberAction(member.id, 'approve')}
-                          disabled={processingMemberId === member.id}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 6,
-                            padding: '9px 18px', borderRadius: 12,
-                            backgroundColor: T.green, border: 'none',
-                            color: 'white', fontWeight: 800, fontSize: 13, cursor: 'pointer',
-                            boxShadow: `0 4px 14px ${T.green}30`
-                          }}
-                        >
-                          {processingMemberId === member.id ? (
-                            <>
-                              <Loader2 size={16} className="animate-spin" />
-                              <span>Activating...</span>
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle2 size={16} />
-                              <span>Approve Member</span>
-                            </>
-                          )}
                         </button>
                       </div>
                     </div>
@@ -1524,19 +1468,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                                 Dossier
                               </button>
 
-                              {isPending && (
-                                <button
-                                  onClick={() => handleMemberAction(m.id, 'approve')}
-                                  disabled={processingMemberId === m.id}
-                                  style={{
-                                    padding: '6px 12px', borderRadius: 8,
-                                    backgroundColor: T.green, border: 'none',
-                                    fontSize: 12, fontWeight: 800, color: 'white', cursor: 'pointer'
-                                  }}
-                                >
-                                  Approve
-                                </button>
-                              )}
 
                               {isActive && (
                                 <button
@@ -2071,7 +2002,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
               {/* Action Buttons in Modal */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8 }}>
-                {selectedMemberModal.status !== 'active' ? (
+                {selectedMemberModal.status !== 'active' && selectedMemberModal.status !== 'pending' ? (
                   <button
                     onClick={() => handleMemberAction(selectedMemberModal.id, 'approve')}
                     disabled={processingMemberId === selectedMemberModal.id}
