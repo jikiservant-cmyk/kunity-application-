@@ -43,7 +43,14 @@ function verifyLivePaySignature(rawBody: string, signatureHeader: string | null)
   return crypto.timingSafeEqual(signatureBuffer, digestBuffer);
 }
 
-export async function POST(req: Request) {
+// LivePay is not used. Every request is refused before any signature or ledger work.
+export async function POST(_req: Request) {
+  return NextResponse.json({ error: 'LivePay is not an enabled provider' }, { status: 410 });
+}
+
+// Retained for reference only; unreachable.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function legacyLivePayHandler(req: Request) {
   try {
     const rawBody = await req.text();
     const signatureHeader = req.headers.get('x-livepay-signature');
