@@ -143,6 +143,34 @@ export default function MemberDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [amountInput, setAmountInput] = useState('');
+  const [loanProducts, setLoanProducts] = useState<any[]>([]);
+  const [selectedLoanProductId, setSelectedLoanProductId] = useState('');
+  const [loanProductsError, setLoanProductsError] = useState('');
+
+  // Loan products are defined by the SACCO admin. Load them when the loan form opens.
+  useEffect(() => {
+    if (activeModal !== 'loan') return;
+    let cancelled = false;
+    setLoanProductsError('');
+    (async () => {
+      try {
+        const res = await fetch('/api/member/loan-products');
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setLoanProducts([]);
+          setLoanProductsError(data.error || 'Could not load loan products.');
+          return;
+        }
+        const list = data.loanProducts || [];
+        setLoanProducts(list);
+        setSelectedLoanProductId(list.length === 1 ? list[0].id : '');
+      } catch {
+        if (!cancelled) setLoanProductsError('Could not load loan products.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeModal]);
   const [phoneInput, setPhoneInput] = useState('');
   const [promptPayment, setPromptPayment] = useState<{
     id: string;
@@ -555,7 +583,12 @@ export default function MemberDashboard() {
       }
     } else if (activeModal === 'loan') {
       try {
-        const res = await fetch('/api/member/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'loan', amount }) });
+        if (!selectedLoanProductId) {
+          alert("Choose a loan product first.");
+          setActionLoading(false);
+          return;
+        }
+        const res = await fetch('/api/member/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'loan', amount, productId: selectedLoanProductId }) });
         if (!res.ok) { const err = await res.json(); throw new Error(err.error); }
       } catch(e:any) {
         alert("Error: " + e.message);
@@ -1420,6 +1453,32 @@ export default function MemberDashboard() {
               </div>
               
               <form onSubmit={performAction} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {activeModal === 'loan' && (
+                  loanProductsError ? (
+                    <p style={{ color: T.red, fontSize: 13, margin: 0 }}>{loanProductsError}</p>
+                  ) : loanProducts.length === 0 ? (
+                    <p style={{ color: T.sub, fontSize: 13, margin: 0 }}>No loan products are available yet. Ask your SACCO to add one.</p>
+                  ) : (
+                    <>
+                      <select
+                        required
+                        value={selectedLoanProductId}
+                        onChange={e => setSelectedLoanProductId(e.target.value)}
+                        style={{
+                          width: '100%', padding: '16px', borderRadius: 16, border: `1px solid ${T.border}`,
+                          fontSize: 16, background: '#F9FAFB', outline: 'none'
+                        }}
+                      >
+                        <option value="" disabled>Choose a loan product</option>
+                        {loanProducts.map((lp: any) => (
+                          <option key={lp.id} value={lp.id}>
+                            {lp.name} · {lp.interest_rate}% · UGX {Number(lp.min_amount).toLocaleString()} – {Number(lp.max_amount).toLocaleString()}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )
+                )}
                 <input
                   type="number"
                   min="1"
@@ -1432,7 +1491,7 @@ export default function MemberDashboard() {
                     fontSize: 18, background: '#F9FAFB', outline: 'none'
                   }}
                 />
-                <button disabled={actionLoading} type="submit" style={{
+                <button disabled={actionLoading || (activeModal === 'loan' && (loanProducts.length === 0 || !selectedLoanProductId))} type="submit" style={{
                   width: '100%', padding: '16px', borderRadius: 16, background: T.blue, color: 'white',
                   fontSize: 16, fontWeight: 700, border: 'none', cursor: 'pointer',
                   opacity: actionLoading ? 0.7 : 1

@@ -40,23 +40,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Member profile not found' }, { status: 403 });
     }
 
-    // 1. Ensure a default savings product exists
-    let { data: productsData } = await supabaseAdminLocal.schema('kunity').from('savings_products').select('*').eq('organization_id', member.organization_id);
-    let productId = null;
-    
-    if (!productsData || productsData.length === 0) {
-      const { data: newProduct } = await supabaseAdminLocal.schema('kunity').from('savings_products').insert({
-        organization_id: member.organization_id,
-        name: 'Standard Savings',
-        interest_rate: 5.0,
-        min_balance: 0,
-        allows_withdrawals: true,
-        deposit_frequency: 'monthly'
-      }).select('id').single();
-      if (newProduct) productId = newProduct.id;
-    } else {
-      productId = productsData[0].id;
-    }
+    // 1. Savings products are created by the SACCO admin (Settings > Products).
+    //    This route no longer creates a default product, so a member can never
+    //    set the SACCO's savings terms. If the SACCO has no product yet, no
+    //    account is opened here and the member is told to wait for the admin.
+    let { data: productsData } = await supabaseAdminLocal.schema('kunity').from('savings_products').select('id, is_active').eq('organization_id', member.organization_id);
+    const activeProduct = (productsData || []).find((p: any) => p.is_active !== false);
+    const productId: string | null = activeProduct ? activeProduct.id : null;
 
     // 2. Ensure the member has a savings account. FIN-31: the account is
     //    created INACTIVE and FROZEN, exactly like /api/member/open-account.

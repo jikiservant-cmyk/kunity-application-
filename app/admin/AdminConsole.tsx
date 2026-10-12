@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import ProductsSettings from './ProductsSettings';
 import { 
   Building2, Users, CreditCard, Send, Shield, RefreshCw, LogOut, 
   ArrowUpRight, ArrowDownLeft, CheckCircle2, XCircle, AlertCircle, 
@@ -1819,6 +1820,8 @@ New members become active automatically when they pay the activation fee. Declin
                 Technical identifiers, database schema partitioning, and cryptographic API tokens.
               </p>
             </div>
+
+            <ProductsSettings orgId={orgId} onToast={setToastMessage} />
 
             <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '20px 24px', border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
