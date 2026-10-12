@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { profileUpdateLimiter } from '@/lib/rate-limit';
+import { profileUpdateLimiter, registrationLimiter } from '@/lib/rate-limit';
+import { registrationBlockReason, identityChangeReason } from '@/lib/registration-guard';
 import { normalizeJoinCode } from '@/lib/join-code';
 
 export async function POST(req: NextRequest) {
@@ -128,7 +129,7 @@ export async function POST(req: NextRequest) {
     const { data: existingMember, error: fetchMemberErr } = await supabaseAdmin
       .schema('kunity')
       .from('members')
-      .select('id, organization_id, status, phone, first_name, last_name')
+      .select('id, organization_id, status, phone, first_name, last_name, national_id, date_of_birth, gender')
       .eq('id', authenticatedUserId)
       .maybeSingle();
 
@@ -150,6 +151,40 @@ export async function POST(req: NextRequest) {
           { error: 'Forbidden: Member already belongs to another SACCO organization. Cross-tenant migration is prohibited.' },
           { status: 403 }
         );
+      }
+
+      // Identity fields are locked once the membership has been processed.
+      const identityBlock = identityChangeReason({
+        memberStatus: existingMember.status,
+        stored: {
+          national_id: existingMember.national_id,
+          date_of_birth: existingMember.date_of_birth,
+          gender: existingMember.gender,
+        },
+        incoming: {
+          ...(nationalId !== undefined ? { national_id: nationalId } : {}),
+          ...(dateOfBirth !== undefined ? { date_of_birth: dateOfBirth } : {}),
+          ...(gender !== undefined ? { gender } : {}),
+        },
+      });
+      if (identityBlock) {
+        return NextResponse.json({ error: identityBlock }, { status: 403 });
+      }
+
+      // A changed National ID must not belong to another member of this SACCO.
+      if (nationalId && String(nationalId).trim() !== String(existingMember.national_id ?? '').trim()) {
+        const { data: nidTaken } = await supabaseAdmin
+          .schema('kunity')
+          .from('members')
+          .select('id')
+          .eq('organization_id', orgId)
+          .eq('national_id', String(nationalId).trim())
+          .neq('id', authenticatedUserId)
+          .limit(1)
+          .maybeSingle();
+        if (nidTaken) {
+          return NextResponse.json({ error: 'This National ID is already registered with this SACCO. Please contact your SACCO.' }, { status: 409 });
+        }
       }
 
       // Safe update: Only mutate allowable profile fields, never overwrite status or tenant
@@ -184,6 +219,52 @@ export async function POST(req: NextRequest) {
     }
 
     // 6. New Member Registration
+    // Rate-limit new profiles per client network: one person can otherwise mint
+    // unlimited accounts (and welcome SMS) by signing up again.
+    const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+    try {
+      await registrationLimiter.check(5, `register:${clientIp}`);
+    } catch (rlErr: unknown) {
+      return NextResponse.json({ error: (rlErr as Error).message }, { status: 429 });
+    }
+
+    // A person already declined by THIS SACCO may not re-register under a new
+    // email (matched by National ID or phone); a National ID already held by
+    // another member of this SACCO is refused.
+    // Two plain equality lookups (no string-built filter from user input).
+    let matchesDeclinedMember = false;
+    const declinedChecks: Array<[string, string]> = [];
+    if (nationalId) declinedChecks.push(['national_id', String(nationalId).trim()]);
+    if (phone) declinedChecks.push(['phone', String(phone).trim()]);
+    for (const [column, value] of declinedChecks) {
+      const { data: declined } = await supabaseAdmin
+        .schema('kunity')
+        .from('members')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('status', 'rejected')
+        .eq(column, value)
+        .limit(1)
+        .maybeSingle();
+      if (declined) matchesDeclinedMember = true;
+    }
+    let nationalIdTakenByOtherMember = false;
+    if (nationalId) {
+      const { data: nidTaken } = await supabaseAdmin
+        .schema('kunity')
+        .from('members')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('national_id', String(nationalId).trim())
+        .limit(1)
+        .maybeSingle();
+      nationalIdTakenByOtherMember = !!nidTaken;
+    }
+    const registrationBlock = registrationBlockReason({ matchesDeclinedMember, nationalIdTakenByOtherMember });
+    if (registrationBlock) {
+      return NextResponse.json({ error: registrationBlock }, { status: 403 });
+    }
+
     // Strictly create the member under authenticatedUserId and verified orgId
     const newMemberData = {
       id: authenticatedUserId,
