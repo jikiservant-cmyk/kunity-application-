@@ -1472,7 +1472,7 @@ export default function MemberDashboard() {
                         <option value="" disabled>Choose a loan product</option>
                         {loanProducts.map((lp: any) => (
                           <option key={lp.id} value={lp.id}>
-                            {lp.name} · {lp.interest_rate}% · UGX {Number(lp.min_amount).toLocaleString()} – {Number(lp.max_amount).toLocaleString()}
+                            {lp.name} · {lp.interest_rate}% · UGX {Number(lp.min_principal || 0).toLocaleString()}{lp.max_principal != null ? ` – ${Number(lp.max_principal).toLocaleString()}` : ' and up'}
                           </option>
                         ))}
                       </select>

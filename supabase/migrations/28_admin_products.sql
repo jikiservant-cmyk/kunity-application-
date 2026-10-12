@@ -1,42 +1,44 @@
 -- supabase/migrations/28_admin_products.sql
--- Admin-managed savings and loan products.
+-- Admin-managed savings and loan products. Column shapes match the LIVE tables:
+--   kunity.savings_products  (deposit_frequency is 'weekly' only, live check constraint)
+--   kunity.loan_products     (min_principal / max_principal; max NULL = no upper limit)
 --
---   * kunity.loan_products: per-SACCO loan products (rate, min/max amount, active flag).
---     Writes and reads go through server routes (service role) only.
---   * savings_products: make sure the columns the app writes exist (idempotent).
---   * kunity.loans.loan_product_id: which product a loan was applied under.
---   * kunity.member_apply_loan_for_product: applies a loan using the PRODUCT'S rate and
---     limits, never a caller-supplied rate. Replaces the hardcoded 10% for product loans.
---     The original member_apply_loan (10%) is left in place but is no longer called.
+--   * Both tables: RLS on, anon/authenticated revoked. Access is through server routes
+--     (service role) only, which scope every query to the caller's SACCO.
+--   * kunity.loans.loan_product_id records which product a loan was applied under.
+--   * kunity.member_apply_loan_for_product applies a loan with the PRODUCT'S rate and
+--     limits. The caller never supplies a rate. Deleted or inactive products are refused.
+--   * The original member_apply_loan (fixed 10%) is kept but no longer called.
 --
--- Loan approval and disbursement are unchanged.
+-- Loan approval and disbursement are unchanged. processing_fee and term_months are stored
+-- on the product but NOT applied to loans yet (no fee or term column on loans).
 
 CREATE TABLE IF NOT EXISTS kunity.loan_products (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID NOT NULL REFERENCES kunity.organizations(id),
   name TEXT NOT NULL,
-  interest_rate NUMERIC(10,4) NOT NULL CHECK (interest_rate >= 0 AND interest_rate <= 100),
-  min_amount NUMERIC(20,2) NOT NULL DEFAULT 0 CHECK (min_amount >= 0),
-  max_amount NUMERIC(20,2) NOT NULL CHECK (max_amount > 0),
-  is_active BOOLEAN NOT NULL DEFAULT true,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT loan_products_amount_range CHECK (max_amount >= min_amount)
+  interest_rate NUMERIC NOT NULL,
+  min_principal NUMERIC DEFAULT 0,
+  max_principal NUMERIC,
+  term_months INTEGER,
+  processing_fee NUMERIC DEFAULT 0,
+  is_active BOOLEAN DEFAULT true,
+  deleted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
-
-CREATE INDEX IF NOT EXISTS loan_products_org_active_idx
-  ON kunity.loan_products (organization_id, is_active);
 
 ALTER TABLE kunity.loan_products ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON kunity.loan_products FROM PUBLIC, anon, authenticated;
 GRANT ALL ON kunity.loan_products TO service_role;
 
 ALTER TABLE kunity.savings_products
-  ADD COLUMN IF NOT EXISTS interest_rate NUMERIC(10,4) DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS min_balance NUMERIC(20,2) DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS interest_rate NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS min_balance NUMERIC DEFAULT 0,
   ADD COLUMN IF NOT EXISTS allows_withdrawals BOOLEAN DEFAULT true,
-  ADD COLUMN IF NOT EXISTS deposit_frequency TEXT DEFAULT 'monthly',
-  ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+  ADD COLUMN IF NOT EXISTS deposit_frequency TEXT DEFAULT 'weekly',
+  ADD COLUMN IF NOT EXISTS target_amount NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true,
+  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 ALTER TABLE kunity.loans
   ADD COLUMN IF NOT EXISTS loan_product_id UUID REFERENCES kunity.loan_products(id);
@@ -75,14 +77,21 @@ BEGIN
 
   SELECT * INTO v_product
   FROM kunity.loan_products
-  WHERE id = p_product_id AND organization_id = p_organization_id AND is_active;
+  WHERE id = p_product_id
+    AND organization_id = p_organization_id
+    AND is_active IS TRUE
+    AND deleted_at IS NULL;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Loan product is not available in this organization';
   END IF;
 
-  IF p_amount < v_product.min_amount OR p_amount > v_product.max_amount THEN
-    RAISE EXCEPTION 'Loan amount must be between % and % for this product', v_product.min_amount, v_product.max_amount;
+  IF p_amount < COALESCE(v_product.min_principal, 0) THEN
+    RAISE EXCEPTION 'Loan amount must be at least % for this product', COALESCE(v_product.min_principal, 0);
+  END IF;
+
+  IF v_product.max_principal IS NOT NULL AND p_amount > v_product.max_principal THEN
+    RAISE EXCEPTION 'Loan amount must be at most % for this product', v_product.max_principal;
   END IF;
 
   INSERT INTO kunity.loans (organization_id, member_id, principal, interest_rate, status,

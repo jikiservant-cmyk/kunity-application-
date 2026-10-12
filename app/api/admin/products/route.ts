@@ -49,10 +49,10 @@ export async function POST(req: NextRequest) {
       const [savings, loans] = await Promise.all([
         supabaseAdmin.schema('kunity').from('savings_products')
           .select('id, name, interest_rate, min_balance, allows_withdrawals, deposit_frequency, is_active, created_at')
-          .eq('organization_id', targetOrgId).order('created_at', { ascending: true }),
+          .eq('organization_id', targetOrgId).is('deleted_at', null).order('created_at', { ascending: true }),
         supabaseAdmin.schema('kunity').from('loan_products')
-          .select('id, name, interest_rate, min_amount, max_amount, is_active, created_at')
-          .eq('organization_id', targetOrgId).order('created_at', { ascending: true }),
+          .select('id, name, interest_rate, min_principal, max_principal, is_active, created_at')
+          .eq('organization_id', targetOrgId).is('deleted_at', null).order('created_at', { ascending: true }),
       ]);
       if (savings.error || loans.error) {
         console.error('[admin/products] list failed:', savings.error || loans.error);
@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
       if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
       const { data, error } = await supabaseAdmin.schema('kunity').from('loan_products')
         .insert({ ...v.value, organization_id: targetOrgId, is_active: true })
-        .select('id, name, interest_rate, min_amount, max_amount, is_active')
+        .select('id, name, interest_rate, min_principal, max_principal, is_active')
         .single();
       if (error || !data) {
         console.error('[admin/products] create loan failed:', error);
@@ -114,6 +114,7 @@ export async function POST(req: NextRequest) {
         .update({ is_active: isActive })
         .eq('id', productId)
         .eq('organization_id', targetOrgId)
+        .is('deleted_at', null)
         .select('id, is_active')
         .maybeSingle();
       if (error) return NextResponse.json({ error: 'Could not update the product' }, { status: 500 });

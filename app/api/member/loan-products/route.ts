@@ -33,9 +33,10 @@ export async function GET() {
     const { data, error } = await admin
       .schema('kunity')
       .from('loan_products')
-      .select('id, name, interest_rate, min_amount, max_amount')
+      .select('id, name, interest_rate, min_principal, max_principal')
       .eq('organization_id', member.organization_id)
       .eq('is_active', true)
+      .is('deleted_at', null)
       .order('name', { ascending: true });
     if (error) return NextResponse.json({ error: 'Could not load loan products' }, { status: 500 });
 

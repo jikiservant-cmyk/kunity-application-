@@ -17,6 +17,8 @@ const M_PENDING = '22222222-0000-0000-0000-0000000000e2';
 const P_OK = '33333333-0000-0000-0000-0000000000a1';
 const P_INACTIVE = '33333333-0000-0000-0000-0000000000a2';
 const P_OTHER_ORG = '33333333-0000-0000-0000-0000000000b1';
+const P_OPEN = '33333333-0000-0000-0000-0000000000a3';
+const P_DELETED = '33333333-0000-0000-0000-0000000000a4';
 
 const results = [];
 const record = (name, pass, detail = '') => {
@@ -28,14 +30,19 @@ const db = new PGlite();
 await db.exec(`CREATE SCHEMA IF NOT EXISTS auth; CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS $$ SELECT NULL::uuid $$;`);
 await db.exec(read('test/financial-base-schema.sql'));
 await db.exec(read('supabase/migrations/28_admin_products.sql'));
+// Mirror the live check constraint on savings_products.deposit_frequency (weekly only).
+await db.exec(`ALTER TABLE kunity.savings_products ADD CONSTRAINT savings_products_deposit_frequency_check CHECK (deposit_frequency = 'weekly')`);
 await db.exec(`
   INSERT INTO kunity.organizations (id,name,code) VALUES ('${ORG}','Sacco A','A'), ('${ORG_B}','Sacco B','B');
   INSERT INTO kunity.members (id,organization_id,status) VALUES
     ('${M}','${ORG}','active'), ('${M_PENDING}','${ORG}','pending');
-  INSERT INTO kunity.loan_products (id,organization_id,name,interest_rate,min_amount,max_amount,is_active) VALUES
+  INSERT INTO kunity.loan_products (id,organization_id,name,interest_rate,min_principal,max_principal,is_active) VALUES
     ('${P_OK}','${ORG}','Development Loan',12.5,100000,2000000,true),
     ('${P_INACTIVE}','${ORG}','Retired Loan',8,0,500000,false),
-    ('${P_OTHER_ORG}','${ORG_B}','Other SACCO Loan',3,0,9000000,true);
+    ('${P_OTHER_ORG}','${ORG_B}','Other SACCO Loan',3,0,9000000,true),
+    ('${P_OPEN}','${ORG}','Open Loan',10,50000,NULL,true);
+  INSERT INTO kunity.loan_products (id,organization_id,name,interest_rate,min_principal,max_principal,is_active,deleted_at) VALUES
+    ('${P_DELETED}','${ORG}','Deleted Loan',6,0,900000,true,NOW());
 `);
 
 const apply = async (member, product, amount) => {
@@ -55,9 +62,15 @@ record('loan is linked to the product and pending', row && row.loan_product_id =
 
 // 2. Amount limits
 res = await apply(M, P_OK, 50000);
-record('amount below product minimum is refused', !res.ok && /between/.test(res.err), res.err);
+record('amount below product minimum is refused', !res.ok && /at least/.test(res.err), res.err);
 res = await apply(M, P_OK, 2000001);
-record('amount above product maximum is refused', !res.ok && /between/.test(res.err), res.err);
+record('amount above product maximum is refused', !res.ok && /at most/.test(res.err), res.err);
+res = await apply(M, P_OPEN, 999999999);
+record('product with no maximum (NULL) accepts any amount above its minimum', res.ok, res.err);
+res = await apply(M, P_OPEN, 40000);
+record('product with no maximum still enforces its minimum', !res.ok && /at least/.test(res.err), res.err);
+res = await apply(M, P_DELETED, 100000);
+record('soft-deleted product is refused', !res.ok && /not available/.test(res.err), res.err);
 res = await apply(M, P_OK, 100000);
 record('amount exactly at minimum is accepted', res.ok, res.err);
 res = await apply(M, P_OK, 2000000);
@@ -82,15 +95,15 @@ record('refused attempts write no loan rows', (await loanCount()) === before);
 // 6. Savings product columns exist and accept the values the admin route writes
 try {
   await db.exec(`INSERT INTO kunity.savings_products (organization_id,name,interest_rate,min_balance,allows_withdrawals,deposit_frequency,is_active)
-                 VALUES ('${ORG}','Standard Savings',5,0,true,'monthly',true)`);
+                 VALUES ('${ORG}','Standard Savings',5,0,true,'weekly',true)`);
   record('savings product insert with admin fields succeeds', true);
 } catch (e) { record('savings product insert with admin fields succeeds', false, e.message); }
 
-// 7. Constraints: max below min refused at the table level
+// 7. Savings frequency: the live check constraint allows weekly only
 try {
-  await db.exec(`INSERT INTO kunity.loan_products (organization_id,name,interest_rate,min_amount,max_amount) VALUES ('${ORG}','Bad',5,500,100)`);
-  record('loan product with max < min is rejected by the table', false);
-} catch { record('loan product with max < min is rejected by the table', true); }
+  await db.exec(`INSERT INTO kunity.savings_products (organization_id,name,interest_rate,deposit_frequency) VALUES ('${ORG}','Monthly Plan',5,'monthly')`);
+  record('monthly savings product is rejected by the live constraint', false);
+} catch { record('monthly savings product is rejected by the live constraint', true); }
 
 const passed = results.filter(Boolean).length;
 console.log(`\nRESULTS: ${passed}/${results.length} passed`);

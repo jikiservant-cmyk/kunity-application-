@@ -20,8 +20,8 @@ interface SavingsProduct {
   allows_withdrawals: boolean; deposit_frequency: string; is_active: boolean;
 }
 interface LoanProduct {
-  id: string; name: string; interest_rate: number; min_amount: number;
-  max_amount: number; is_active: boolean;
+  id: string; name: string; interest_rate: number; min_principal: number | null;
+  max_principal: number | null; is_active: boolean;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -70,7 +70,6 @@ export default function ProductsSettings({ orgId, onToast }: { orgId: string; on
   const [sName, setSName] = useState('');
   const [sRate, setSRate] = useState('');
   const [sMin, setSMin] = useState('');
-  const [sFreq, setSFreq] = useState('monthly');
   const [sWithdraw, setSWithdraw] = useState(true);
 
   // loan form
@@ -104,10 +103,10 @@ export default function ProductsSettings({ orgId, onToast }: { orgId: string; on
       await callProducts({
         action: 'create_savings', organizationId: orgId || undefined,
         name: sName, interestRate: sRate, minBalance: sMin || 0,
-        depositFrequency: sFreq, allowsWithdrawals: sWithdraw,
+        depositFrequency: 'weekly', allowsWithdrawals: sWithdraw,
       });
       onToast({ type: 'success', text: `Savings product "${sName.trim()}" created.` });
-      setSName(''); setSRate(''); setSMin(''); setSFreq('monthly'); setSWithdraw(true);
+      setSName(''); setSRate(''); setSMin(''); setSWithdraw(true);
       await load();
     } catch (err: any) {
       onToast({ type: 'error', text: err.message });
@@ -181,11 +180,7 @@ export default function ProductsSettings({ orgId, onToast }: { orgId: string; on
           <div><label style={labelStyle}>Minimum balance (UGX)</label><input type="number" min="0" step="100" style={inputStyle} value={sMin} onChange={e => setSMin(e.target.value)} placeholder="0" /></div>
           <div>
             <label style={labelStyle}>Deposit frequency</label>
-            <select style={inputStyle} value={sFreq} onChange={e => setSFreq(e.target.value)}>
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
-            </select>
+            <input style={{ ...inputStyle, background: '#F3F4F6' }} value="Weekly" disabled readOnly />
           </div>
           <label style={{ fontSize: 13, color: C.text, display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 10 }}>
             <input type="checkbox" checked={sWithdraw} onChange={e => setSWithdraw(e.target.checked)} /> Allow withdrawals
@@ -210,7 +205,7 @@ export default function ProductsSettings({ orgId, onToast }: { orgId: string; on
               <div>
                 <div style={{ fontWeight: 800, color: C.text, fontSize: 14 }}>{p.name} <StatusPill active={p.is_active} /></div>
                 <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>
-                  {p.interest_rate}% · UGX {Number(p.min_amount).toLocaleString()} – {Number(p.max_amount).toLocaleString()}
+                  {p.interest_rate}% · UGX {Number(p.min_principal || 0).toLocaleString()}{p.max_principal != null ? ` – ${Number(p.max_principal).toLocaleString()}` : ' and up (no maximum)'}
                 </div>
               </div>
               <button disabled={busy} onClick={() => toggle('loan', p.id, p.is_active)} style={{ ...buttonStyle, background: 'white', color: p.is_active ? C.red : C.green, border: `1px solid ${C.border}` }}>
@@ -224,7 +219,7 @@ export default function ProductsSettings({ orgId, onToast }: { orgId: string; on
           <div><label style={labelStyle}>Name</label><input required style={inputStyle} value={lName} onChange={e => setLName(e.target.value)} placeholder="e.g. Development Loan" maxLength={60} /></div>
           <div><label style={labelStyle}>Interest rate (%)</label><input required type="number" min="0" max="100" step="0.01" style={inputStyle} value={lRate} onChange={e => setLRate(e.target.value)} /></div>
           <div><label style={labelStyle}>Minimum amount (UGX)</label><input type="number" min="0" step="1000" style={inputStyle} value={lMin} onChange={e => setLMin(e.target.value)} placeholder="0" /></div>
-          <div><label style={labelStyle}>Maximum amount (UGX)</label><input required type="number" min="1" step="1000" style={inputStyle} value={lMax} onChange={e => setLMax(e.target.value)} /></div>
+          <div><label style={labelStyle}>Maximum amount (UGX, optional)</label><input type="number" min="1" step="1000" style={inputStyle} value={lMax} onChange={e => setLMax(e.target.value)} placeholder="No maximum" /></div>
           <button disabled={busy} type="submit" style={buttonStyle}>{busy ? 'Saving…' : 'Add loan product'}</button>
         </form>
       </div>
