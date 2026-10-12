@@ -269,7 +269,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   }, []);
 
   // Member Approval Action Handler
-  const handleMemberAction = async (memberId: string, action: 'approve' | 'reject' | 'suspend' | 'set_pending') => {
+  const handleMemberAction = async (memberId: string, action: 'reject' | 'suspend' | 'set_pending') => {
     try {
       setProcessingMemberId(memberId);
       const { data: { session } } = await supabase.auth.getSession();
@@ -290,7 +290,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
       if (res.ok && data.success) {
         setToastMessage({ type: 'success', text: data.message });
         if (selectedMemberModal?.id === memberId) {
-          setSelectedMemberModal((prev: any) => prev ? { ...prev, status: action === 'approve' ? 'active' : action === 'reject' ? 'rejected' : 'suspended' } : null);
+          setSelectedMemberModal((prev: any) => prev ? { ...prev, status: action === 'reject' ? 'rejected' : 'suspended' } : null);
         }
         await fetchAdminData();
       } else {
@@ -1316,7 +1316,7 @@ New members become active automatically when they pay the activation fee. Declin
                     Member Queue is Clear
                   </h3>
                   <p style={{ fontSize: 13, color: T.sub, margin: 0, maxWidth: 420 }}>
-                    All applicants for <strong>{saccoName}</strong> have been reviewed and approved. When new members sign up, they will appear here for board authorization.
+                    All applicants for <strong>{saccoName}</strong> have been reviewed. When new members sign up, they will appear here.
                   </p>
                 </div>
               )}
@@ -1407,7 +1407,6 @@ New members become active automatically when they pay the activation fee. Declin
                       const balance = m.accounts?.reduce((sum: number, a: any) => sum + parseFloat(a.cached_balance || '0'), 0) || 0;
                       const isPending = m.status === 'pending' || m.status === 'pending_approval' || !m.status;
                       const isActive = m.status === 'active';
-                      const isSuspended = m.status === 'suspended';
 
                       return (
                         <tr key={m.id} style={{ borderBottom: `1px solid ${T.border}`, backgroundColor: idx % 2 === 0 ? 'white' : '#FCFAEE' }}>
@@ -1483,19 +1482,6 @@ New members become active automatically when they pay the activation fee. Declin
                                 </button>
                               )}
 
-                              {isSuspended && (
-                                <button
-                                  onClick={() => handleMemberAction(m.id, 'approve')}
-                                  disabled={processingMemberId === m.id}
-                                  style={{
-                                    padding: '6px 10px', borderRadius: 8,
-                                    backgroundColor: 'white', border: `1px solid ${T.border}`,
-                                    fontSize: 12, fontWeight: 700, color: T.green, cursor: 'pointer'
-                                  }}
-                                >
-                                  Reactivate
-                                </button>
-                              )}
                             </div>
                           </td>
                         </tr>
@@ -2002,19 +1988,7 @@ New members become active automatically when they pay the activation fee. Declin
 
               {/* Action Buttons in Modal */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8 }}>
-                {selectedMemberModal.status !== 'active' && selectedMemberModal.status !== 'pending' ? (
-                  <button
-                    onClick={() => handleMemberAction(selectedMemberModal.id, 'approve')}
-                    disabled={processingMemberId === selectedMemberModal.id}
-                    style={{
-                      padding: '12px', borderRadius: 14,
-                      backgroundColor: T.green, color: 'white',
-                      border: 'none', fontWeight: 800, fontSize: 13, cursor: 'pointer'
-                    }}
-                  >
-                    {processingMemberId === selectedMemberModal.id ? 'Approving...' : 'Approve & Activate'}
-                  </button>
-                ) : (
+                {selectedMemberModal.status === 'active' && (
                   <button
                     onClick={() => handleMemberAction(selectedMemberModal.id, 'suspend')}
                     disabled={processingMemberId === selectedMemberModal.id}
