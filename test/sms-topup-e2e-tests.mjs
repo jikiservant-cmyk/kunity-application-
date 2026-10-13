@@ -48,6 +48,11 @@ const server = http.createServer(async (req, res) => {
     return json(200, { reference: NAJIKI_REF, status: 'pending' });
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/payments/')) {
+    // NaJiki (src/app/api/payments/[reference]/route.ts) returns 404 when a tenant-scoped payment
+    // is requested without the matching tenantCode query parameter.
+    if (url.searchParams.get('tenantCode') !== 'sacco-a') {
+      return json(404, { error: 'Payment not found (tenant mismatch)' });
+    }
     return json(200, { reference: decodeURIComponent(url.pathname.split('/').pop()), status: state.najikiStatus, amount: state.najikiAmount });
   }
 

@@ -223,6 +223,9 @@ export async function sendSms({
     const najikiUrl = process.env.NAJIKI_API_URL;
     const apiKey = process.env.NAJIKI_API_KEY;
     const applicationCode = process.env.NAJIKI_APPLICATION_CODE || 'sacco';
+    // The caller's own key (e.g. the Inngest event id) goes to NaJiki, so a retry of the same
+    // event is recognised there as well as by the wallet debit.
+    const najikiIdempotencyKey = idempotencyKey || resolvedIdempotencyKey;
     
     let tenantCode = process.env.NAJIKI_TENANT_CODE;
     try {
@@ -248,7 +251,10 @@ export async function sendSms({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${apiKey}`,
+          // NaJiki deduplicates on this key (unique per application), so a retried dispatch
+          // returns the original SMS instead of sending and charging it again.
+          'Idempotency-Key': najikiIdempotencyKey,
         },
         body: JSON.stringify({
           applicationCode,
@@ -258,7 +264,9 @@ export async function sendSms({
           to: cleanPhone,
           message: finalMessage,
           eventType,
-          from: applicationCode
+          idempotencyKey: najikiIdempotencyKey,
+          // No `from`: NaJiki sends with its own registered sender ID. Passing the application
+          // code here made it the sender ID, which the mobile network rejects.
         }),
         signal: AbortSignal.timeout(10000)
       });

@@ -14,6 +14,7 @@ const state = {
   inserts: [],           // sms_messages rows written
   debits: [],            // debit_sms_wallet calls
   refunds: [],           // refund_sms_wallet calls
+  najikiRequests: [],    // what NaJiki received
 };
 
 const server = http.createServer(async (req, res) => {
@@ -27,6 +28,7 @@ const server = http.createServer(async (req, res) => {
   // NaJiki gateway
   if (req.method === 'POST' && url.pathname === '/api/messaging/send') {
     assert.equal(req.headers.authorization, 'Bearer najiki-key');
+    state.najikiRequests.push({ headers: req.headers, body });
     if (state.najikiMode === 'client_error') return json(400, { error: 'bad number' });
     if (state.najikiMode === 'server_error') return json(502, { error: 'gateway down' });
     if (state.najikiMode === 'ok_no_id') return json(200, { success: true });
@@ -138,6 +140,20 @@ await check('empty wallet: nothing is dispatched and a "failed" row is recorded'
   assert.match(r.error, /Insufficient funds/);
   assert.equal(state.debits.length, 0);
   assert.equal(last().status, 'failed');
+});
+
+await check('NaJiki contract: idempotency key in header and body, no sender override', async () => {
+  state.najikiRequests = []; state.balance = 5000; state.najikiMode = 'ok';
+  const r = await sendSms({
+    tenantId: 't-1', recipientPhone: '0772123456', message: 'Contract check',
+    eventType: 'WELCOME', idempotencyKey: 'welcome-contract-key-1',
+  });
+  assert.equal(r.success, true, r.error);
+  const req = state.najikiRequests.at(-1);
+  assert.equal(req.headers['idempotency-key'], 'welcome-contract-key-1');
+  assert.equal(req.body.idempotencyKey, 'welcome-contract-key-1');
+  assert.equal('from' in req.body, false, 'sender must not be overridden with the application code');
+  assert.equal(req.body.to, '+256772123456');
 });
 
 server.close();

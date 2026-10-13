@@ -104,7 +104,20 @@ export async function POST(req: NextRequest) {
     // Double check status with Najiki
     const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
     const apiKey = process.env.NAJIKI_API_KEY || "";
-    const najikiRes = await fetch(`${apiUrl}/api/payments/${encodeURIComponent(intentId)}`, {
+    // NaJiki (GET /api/payments/[reference]) returns 404 for a tenant-scoped payment unless the
+    // request names the same tenant code. Without this, every confirmation failed.
+    const { data: tenantRow } = await supabaseAdmin
+      .schema('public')
+      .from('tenants')
+      .select('code')
+      .eq('id', tenantId)
+      .maybeSingle();
+    if (!tenantRow?.code) {
+      return NextResponse.json({ error: 'Tenant code not found for this SACCO' }, { status: 400 });
+    }
+    const najikiRes = await fetch(
+      `${apiUrl}/api/payments/${encodeURIComponent(intentId)}?tenantCode=${encodeURIComponent(tenantRow.code)}`,
+      {
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"

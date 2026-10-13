@@ -10,53 +10,55 @@ function getSupabaseAdmin() {
   );
 }
 
-// Verify webhook signature (Najiki should provide X-Najiki-Signature header)
-function verifyWebhookSignature(rawBody: string, signatureHeader: string | null): boolean {
-  const webhookSecret = process.env.NAJIKI_API_KEY;
-  
+// Verify a NaJiki notification. Matches NaJiki's signer (src/lib/notification-signature.ts):
+//   X-Najiki-Timestamp: <unix ms>
+//   X-Najiki-Signature: t=<unix ms>,v=<hex HMAC-SHA256 of "<t>.<raw body>">
+// The secret is the application's webhook secret. NaJiki falls back to the application API key
+// when no separate webhook secret is set, so NAJIKI_WEBHOOK_SECRET defaults to NAJIKI_API_KEY.
+// The timestamp is inside the signed string and must be within 5 minutes, so a captured body
+// cannot be replayed later.
+const NAJIKI_MAX_SKEW_MS = 5 * 60 * 1000;
+
+function verifyWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  timestampHeader: string | null
+): boolean {
+  const secret = process.env.NAJIKI_WEBHOOK_SECRET || process.env.NAJIKI_API_KEY;
+
   // Security Guard: fail closed
-  if (!webhookSecret || webhookSecret === 'your-najiki-webhook-secret-here') {
-    console.error('[Najiki Webhook] ERROR: NAJIKI_API_KEY not configured. Webhook rejected for security.');
+  if (!secret || secret === 'your-najiki-webhook-secret-here') {
+    console.error('[Najiki Webhook] ERROR: NaJiki webhook secret not configured. Webhook rejected for security.');
+    return false;
+  }
+  if (!signatureHeader || !timestampHeader) {
+    console.error('[Najiki Webhook] Missing X-Najiki-Signature or X-Najiki-Timestamp header');
     return false;
   }
 
-  if (!signatureHeader) {
-    console.error('[Najiki Webhook] Missing X-Najiki-Signature header');
+  const match = /^t=(\d+),v=([0-9a-f]+)$/i.exec(signatureHeader.trim());
+  if (!match) return false;
+  const signedAt = Number(match[1]);
+  if (!Number.isFinite(signedAt) || String(signedAt) !== timestampHeader.trim()) return false;
+  if (Math.abs(Date.now() - signedAt) > NAJIKI_MAX_SKEW_MS) {
+    console.error('[Najiki Webhook] Stale or future timestamp rejected');
     return false;
   }
 
-  const cleanSig = signatureHeader.replace(/^sha256=/, '').trim();
-  const digestHex = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-  const digestBase64 = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('base64');
-
-  // Try hex matching
-  try {
-    const sigBuf = Buffer.from(cleanSig, 'hex');
-    const digestBuf = Buffer.from(digestHex, 'hex');
-    if (sigBuf.length === digestBuf.length && crypto.timingSafeEqual(sigBuf, digestBuf)) {
-      return true;
-    }
-  } catch {}
-
-  // Try base64 matching
-  try {
-    const sigBuf = Buffer.from(cleanSig, 'base64');
-    const digestBuf = Buffer.from(digestBase64, 'base64');
-    if (sigBuf.length === digestBuf.length && crypto.timingSafeEqual(sigBuf, digestBuf)) {
-      return true;
-    }
-  } catch {}
-
-  return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${signedAt}.${rawBody}`).digest('hex');
+  const received = Buffer.from(match[2].toLowerCase(), 'hex');
+  const want = Buffer.from(expected, 'hex');
+  return received.length === want.length && crypto.timingSafeEqual(received, want);
 }
 
 export async function POST(req: Request) {
   try {
     const rawBody = await req.text();
     const signatureHeader = req.headers.get('x-najiki-signature');
+    const timestampHeader = req.headers.get('x-najiki-timestamp');
 
     // 1. Verify webhook signature FIRST!
-    if (!verifyWebhookSignature(rawBody, signatureHeader)) {
+    if (!verifyWebhookSignature(rawBody, signatureHeader, timestampHeader)) {
       console.error('[Najiki Webhook] Invalid signature');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
@@ -67,6 +69,13 @@ export async function POST(req: Request) {
     } catch {
       console.error('[Najiki Webhook] Invalid JSON payload');
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+    }
+
+    // SMS delivery updates share this endpoint (NaJiki sends them to the same webhook path).
+    // They are not payments: acknowledge them so NaJiki does not treat the call as failed.
+    if (body?.eventType === 'SMS_DELIVERY_UPDATE') {
+      console.log(`[Najiki Webhook] SMS delivery update ${body.reference ?? body.smsId}: ${body.status}`);
+      return NextResponse.json({ received: true, eventType: 'SMS_DELIVERY_UPDATE' });
     }
 
     // NaJiki webhook payload
