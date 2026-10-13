@@ -177,6 +177,29 @@ export async function POST(req: NextRequest) {
       }, { status: 500 });
     }
 
+    // Record the NaJiki payment in payment_requests, the same way /api/payments/intent does, so the
+    // top-up is visible with the other payments. The wallet credit does NOT depend on this row:
+    // the webhook and confirm route credit from wallet_transactions, and the ledger RPC records
+    // BUY_SMS without posting journal entries. So a failure here is logged, not fatal.
+    const { error: prErr } = await supabaseAdmin.schema('kunity').from('payment_requests').insert({
+      id: crypto.randomUUID(),
+      organization_id: tenantId,
+      member_id: null,
+      amount: amount,
+      currency: 'UGX',
+      phone_number: momo,
+      status: 'pending',
+      direction: 'inbound',
+      idempotency_key: localRef,
+      internal_reference: najikiRef,
+      payment_type: 'BUY_SMS',
+      payload: intent,
+      provider: 'najiki',
+    });
+    if (prErr) {
+      console.error('[SMS Topup API] payment_requests row not written (top-up continues, credit unaffected):', prErr, { najikiRef });
+    }
+
     await logAudit(supabaseAdmin, {
       adminId: user.id,
       tenantId: tenantId,
