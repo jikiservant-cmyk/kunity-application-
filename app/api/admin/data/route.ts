@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { apiLimiter } from '@/lib/rate-limit';
+import { LOW_SMS_BALANCE_CREDITS } from '@/lib/sms-alerts';
 
 export async function POST(req: NextRequest) {
   try {
@@ -346,6 +347,9 @@ export async function POST(req: NextRequest) {
       savingsProducts: savingsProducts || [],
       recentTransactions: transactions,
       smsBalance: Math.floor(walletBalance / smsRate),
+      // SMS WORKFLOW FIX: automatic member SMS silently fail when the balance is too low.
+      // The dashboard warns the admin before that happens.
+      smsLowBalance: walletBalance < smsRate * LOW_SMS_BALANCE_CREDITS,
       smsRate,
       smsHistory,
       adminProfile: adminProfile || { full_name: adminAuth.user.email?.split('@')[0] || 'Administrator', role: 'sacco_admin' }

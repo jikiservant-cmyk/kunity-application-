@@ -270,6 +270,33 @@ export async function sendSms({
         throw new Error(`HTTP_${response.status}: ${errorText}`);
       }
       console.log(`[SMS Service] Successfully dispatched to NaJiki for ${recipientPhone}`);
+
+      // SMS WORKFLOW FIX (2026-10-13): record the successful send in the SACCO's SMS log,
+      // not only the failures, so admins can see what members were sent.
+      let providerId: string | null = null;
+      try {
+        const body = await response.clone().json();
+        providerId = body?.messageId || body?.id || body?.data?.messageId || null;
+      } catch {
+        providerId = null;
+      }
+      const { error: sentLogErr } = await supabaseAdmin
+        .schema('public')
+        .from('sms_messages')
+        .insert({
+          tenant_id: tenantId,
+          application_id: applicationId,
+          phone_number: cleanPhone,
+          compiled_message: finalMessage,
+          cost: totalCost,
+          transaction_type: 'debit',
+          status: 'sent',
+          event_code: eventType || null,
+          provider_message_id: providerId ? String(providerId) : `sent_${crypto.randomUUID()}`
+        });
+      if (sentLogErr) {
+        console.warn(`[SMS Service] Sent-message log insert failed (message was dispatched): ${sentLogErr.message}`);
+      }
     } catch (err: any) {
       console.error(`[SMS Service] NaJiki dispatch failed:`, err);
       

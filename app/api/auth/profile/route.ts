@@ -329,7 +329,7 @@ export async function POST(req: NextRequest) {
     if (phone && createdHere) {
       const shortId = authenticatedUserId.slice(0, 8).toUpperCase();
       const saccoName = targetOrg.name || 'our SACCO';
-      const welcomeMsg = `Hello ${firstName}, welcome to ${saccoName}! Your membership application has been submitted and is pending verification. Your Member ID is: ${shortId}.`;
+      const welcomeMsg = `Hello ${firstName}, welcome to ${saccoName}! Your membership application has been received. Your Member ID is: ${shortId}. Keep this ID for your records.`;
       try {
         const { inngest } = await import('@/lib/inngest/client');
         await inngest.send({

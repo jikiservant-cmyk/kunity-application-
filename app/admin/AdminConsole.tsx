@@ -124,6 +124,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [savingsProducts, setSavingsProducts] = useState<any[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [smsBalance, setSmsBalance] = useState(0);
+  const [smsLowBalance, setSmsLowBalance] = useState(false);
   const [smsRate, setSmsRate] = useState(50);
   const [smsHistory, setSmsHistory] = useState<any[]>([]);
 
@@ -280,6 +281,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         setSavingsProducts(data.savingsProducts || []);
         setRecentTransactions(data.recentTransactions || []);
         setSmsBalance(data.smsBalance || 0);
+        setSmsLowBalance(!!data.smsLowBalance);
         setSmsRate(data.smsRate || 50);
         setSmsHistory(data.smsHistory || []);
         setAdminProfile(data.adminProfile || {});
@@ -857,6 +859,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                 <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
                   Rate: {smsRate} UGX per alert
                 </div>
+                {smsLowBalance && (
+                  <div role="alert" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 10, backgroundColor: '#FEF2F2', color: '#B91C1C', fontSize: 12, fontWeight: 700 }}>
+                    Low SMS balance. Member SMS (welcome and receipts) will fail once it runs out. Top up now.
+                  </div>
+                )}
               </div>
 
             </div>
