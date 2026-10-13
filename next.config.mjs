@@ -38,6 +38,16 @@ const nextConfig = {
             key: 'Referrer-Policy',
             value: 'strict-origin-when-cross-origin',
           },
+          {
+            // PENTEST 2026-10-13: force HTTPS for returning browsers.
+            key: 'Strict-Transport-Security',
+            value: 'max-age=63072000; includeSubDomains',
+          },
+          {
+            // PENTEST 2026-10-13: the app does not use these browser features.
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+          },
         ],
       },
     ];

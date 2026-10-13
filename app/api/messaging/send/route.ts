@@ -6,6 +6,11 @@ import { messagingLimiter } from '@/lib/rate-limit';
 // If running in edge or node without africastalking, we use fetch to their REST API.
 // Africastalking API: https://api.africastalking.com/version1/messaging
 
+const MAX_RECIPIENTS = 100;
+const MAX_MESSAGE_CHARS = 1000;
+const SENDER_ID_PATTERN = /^[A-Za-z0-9]{3,11}$/;
+const E164_PATTERN = /^\+\d{9,15}$/;
+
 export async function POST(req: NextRequest) {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -53,6 +58,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Bad Request: "to" and "message" are required' }, { status: 400 });
     }
 
+    // SECURITY: validate the payload shape before any billing or provider call.
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      return NextResponse.json({ error: 'Bad Request: "message" must be a non-empty string' }, { status: 400 });
+    }
+    if (message.length > MAX_MESSAGE_CHARS) {
+      return NextResponse.json({ error: `Bad Request: "message" exceeds ${MAX_MESSAGE_CHARS} characters` }, { status: 400 });
+    }
+    if (from !== undefined && from !== null && (typeof from !== 'string' || !SENDER_ID_PATTERN.test(from))) {
+      return NextResponse.json({ error: 'Bad Request: "from" must be 3-11 alphanumeric characters' }, { status: 400 });
+    }
+
     // FIN-37: tenantCode is REQUIRED. Without it the message had no tenant to
     // bill, so any application key could send SMS at the platform's expense.
     if (!tenantCode) {
@@ -76,6 +92,9 @@ export async function POST(req: NextRequest) {
 
     // 2. Format & Sanitize Phone Numbers
     const numbers = Array.isArray(to) ? to : [to];
+    if (numbers.length > MAX_RECIPIENTS) {
+      return NextResponse.json({ error: `Bad Request: at most ${MAX_RECIPIENTS} recipients per request` }, { status: 400 });
+    }
     const normalizedNumbers = numbers.map((n: string) => {
       let clean = String(n).replace(/[^\d+]/g, '');
       // If starts with 07 or 03 (Uganda standard local), replace with +256
@@ -91,6 +110,10 @@ export async function POST(req: NextRequest) {
 
     if (normalizedNumbers.length === 0) {
       return NextResponse.json({ error: 'No valid phone numbers provided' }, { status: 400 });
+    }
+    // SECURITY: reject malformed numbers up front so the tenant is never billed for them.
+    if (!normalizedNumbers.every((n: string) => E164_PATTERN.test(n))) {
+      return NextResponse.json({ error: 'Bad Request: one or more phone numbers are invalid' }, { status: 400 });
     }
 
     // 3. SMS Gateway Dispatch (Africa's Talking) - FAIL CLOSED

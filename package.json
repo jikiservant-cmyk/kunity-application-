@@ -16,7 +16,6 @@
     "@supabase/supabase-js": "^2.110.0",
     "@types/pg": "^8.20.0",
     "@upstash/redis": "^1.38.4",
-    "africastalking": "^0.7.9",
     "autoprefixer": "^10.4.21",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

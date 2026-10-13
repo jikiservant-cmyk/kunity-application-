@@ -6,6 +6,10 @@ export async function GET(
 ) {
   try {
     const { intentId } = await params;
+    // SECURITY: intentId is forwarded into an upstream URL; accept only plain ids.
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(intentId || '')) {
+      return NextResponse.json({ error: 'Invalid payment reference' }, { status: 400 });
+    }
 
     const authHeader = req.headers.get('authorization');
     let token = null;
@@ -55,7 +59,7 @@ export async function GET(
 
     const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
     const apiKey = process.env.NAJIKI_API_KEY || "";
-    const response = await fetch(`${apiUrl}/api/payments/${intentId}`, {
+    const response = await fetch(`${apiUrl}/api/payments/${encodeURIComponent(intentId)}`, {
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
