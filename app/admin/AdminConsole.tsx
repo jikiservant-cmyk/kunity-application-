@@ -469,10 +469,12 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setToastMessage({ type: 'success', text: 'Payment initialized! Check your mobile phone to enter your PIN.' });
+        setToastMessage({ type: 'success', text: 'Payment requested. Check your phone and enter your PIN. Credits are added once the payment is confirmed.' });
         setShowBuyModal(false);
         setSelectedPack(null);
         await fetchAdminData();
+        // Credits used to appear only if NaJiki's webhook reached us. Confirm the payment here too.
+        void waitForTopupConfirmation(session.access_token, data.intentId || data.intent?.id);
       } else {
         setToastMessage({ type: 'error', text: data.error || 'Mobile money prompt failed' });
       }
@@ -481,6 +483,46 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     } finally {
       setIsProcessingBuy(false);
     }
+  };
+
+  // Polls the server until the NaJiki payment is confirmed and the credits are added.
+  // The confirm route checks NaJiki and credits idempotently, so repeated polls are safe.
+  const waitForTopupConfirmation = async (accessToken: string, intentId?: string) => {
+    if (!intentId) return;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const res = await fetch('/api/admin/sms/topup/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: accessToken, intentId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
+          const credits = data.addedCredits ?? data.newBalanceCredits;
+          setToastMessage({
+            type: 'success',
+            text: data.message === 'Already processed'
+              ? 'This top-up was already credited to your SMS wallet.'
+              : `Payment confirmed. ${credits ? credits.toLocaleString() + ' SMS credits' : 'SMS credits'} added to your wallet.`
+          });
+          await fetchAdminData();
+          return;
+        }
+        // Still waiting on the mobile money PIN, or NaJiki is briefly unreachable: keep polling.
+        const pending = res.status === 400 && /not yet successful|Failed to verify/i.test(String(data.error || ''));
+        if (!pending) {
+          setToastMessage({ type: 'error', text: data.error || 'The top-up could not be confirmed.' });
+          return;
+        }
+      } catch {
+        // Network blip: keep polling.
+      }
+    }
+    setToastMessage({
+      type: 'error',
+      text: 'The top-up is not confirmed yet. If you paid, credits are added automatically once NaJiki confirms it.'
+    });
   };
 
 

@@ -45,7 +45,9 @@ export class NajikiProvider implements PaymentProvider {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`
       },
-      body: JSON.stringify(najikiPayload)
+      body: JSON.stringify(najikiPayload),
+      // Without a timeout a slow NaJiki call would hang the admin request.
+      signal: AbortSignal.timeout(20000),
     });
 
     const contentType = response.headers.get("content-type");
