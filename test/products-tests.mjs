@@ -30,6 +30,7 @@ const db = new PGlite();
 await db.exec(`CREATE SCHEMA IF NOT EXISTS auth; CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS $$ SELECT NULL::uuid $$;`);
 await db.exec(read('test/financial-base-schema.sql'));
 await db.exec(read('supabase/migrations/28_admin_products.sql'));
+await db.exec(read('supabase/migrations/29_product_access_and_loan_terms.sql'));
 // Mirror the live check constraint on savings_products.deposit_frequency (weekly only).
 await db.exec(`ALTER TABLE kunity.savings_products ADD CONSTRAINT savings_products_deposit_frequency_check CHECK (deposit_frequency = 'weekly')`);
 await db.exec(`
@@ -104,6 +105,25 @@ try {
   await db.exec(`INSERT INTO kunity.savings_products (organization_id,name,interest_rate,deposit_frequency) VALUES ('${ORG}','Monthly Plan',5,'monthly')`);
   record('monthly savings product is rejected by the live constraint', false);
 } catch { record('monthly savings product is rejected by the live constraint', true); }
+
+// 8. Migration 29: term copied from product to loan
+await db.exec(`UPDATE kunity.loan_products SET term_months = 24 WHERE id = '${P_OK}'`);
+res = await apply(M, P_OK, 300000);
+const termRow = res.ok ? (await db.query(`SELECT term_months FROM kunity.loans WHERE id='${res.r.loan_id}'`)).rows[0] : null;
+record('loan copies the product term_months (24)', termRow && termRow.term_months === 24, termRow ? `term=${termRow.term_months}` : res.err);
+
+// 9. Migration 29: product constraints
+const rejects = async (sql) => { try { await db.exec(sql); return false; } catch { return true; } };
+record('negative processing fee is rejected', await rejects(`INSERT INTO kunity.loan_products (organization_id,name,interest_rate,processing_fee) VALUES ('${ORG}','Fee',5,-1)`));
+record('maximum below minimum is rejected by the table', await rejects(`INSERT INTO kunity.loan_products (organization_id,name,interest_rate,min_principal,max_principal) VALUES ('${ORG}','Bad',5,500,100)`));
+record('NaN interest rate is rejected', await rejects(`INSERT INTO kunity.loan_products (organization_id,name,interest_rate) VALUES ('${ORG}','NaN',  'NaN')`));
+record('zero term is rejected', await rejects(`INSERT INTO kunity.loan_products (organization_id,name,interest_rate,term_months) VALUES ('${ORG}','Term',5,0)`));
+
+// 10. Migration 29: member read path for savings products, and product tables server-only
+const pol = await db.query(`SELECT policyname FROM pg_policies WHERE schemaname='kunity' AND tablename='savings_products'`);
+record('savings_products has the own-SACCO member read policy only', pol.rows.length === 1 && pol.rows[0].policyname === 'savings_products_select_own_sacco', pol.rows.map(r => r.policyname).join(','));
+const lpPol = await db.query(`SELECT COUNT(*)::int AS n FROM pg_policies WHERE schemaname='kunity' AND tablename='loan_products'`);
+record('loan_products has no client-facing policies', lpPol.rows[0].n === 0, `n=${lpPol.rows[0].n}`);
 
 const passed = results.filter(Boolean).length;
 console.log(`\nRESULTS: ${passed}/${results.length} passed`);
