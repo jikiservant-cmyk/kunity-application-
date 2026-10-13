@@ -3,6 +3,7 @@
 export const SMS_EVENTS = {
   WELCOME: 'WELCOME',
   DEPOSIT_ALERT: 'DEPOSIT_ALERT',
+  ACTIVATION_RECEIPT: 'ACTIVATION_RECEIPT',
   LOAN_APPROVED: 'LOAN_APPROVED',
   LOAN_REJECTED: 'LOAN_REJECTED',
   BROADCAST: 'BROADCAST'
@@ -14,6 +15,7 @@ export type SmsEventType = keyof typeof SMS_EVENTS;
 export const EVENT_PLACEHOLDERS: Record<SmsEventType, string[]> = {
   WELCOME: ['{{first_name}}', '{{member_id}}', '{{sacco_name}}'],
   DEPOSIT_ALERT: ['{{first_name}}', '{{amount}}', '{{tx_ref}}', '{{payment_type}}'],
+  ACTIVATION_RECEIPT: ['{{first_name}}', '{{amount}}', '{{tx_ref}}'],
   LOAN_APPROVED: ['{{first_name}}', '{{loan_amount}}', '{{due_date}}'],
   LOAN_REJECTED: ['{{first_name}}', '{{loan_amount}}', '{{reason}}'],
   BROADCAST: ['{{first_name}}', '{{sacco_name}}']

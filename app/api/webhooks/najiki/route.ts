@@ -184,6 +184,7 @@ export async function POST(req: Request) {
           .select(`
             amount,
             payment_type,
+            internal_reference,
             organization_id,
             member_id,
             members (
@@ -206,17 +207,25 @@ export async function POST(req: Request) {
           const formattedAmount = rawAmount.toLocaleString();
           
           if (phone) {
-            const typeLabel = depInfo.payment_type === 'account_activation' ? 'Account Activation Deposit' : 'Savings Deposit';
-            const messageText = `Dear {{first_name}}, your {{payment_type}} of UGX {{amount}} has been received and credited to your SACCO account successfully. TxRef: {{tx_ref}}. Thank you!`;
+            // SAME RULE AS THE LEDGER RPC: activation is recognised as income (membership fee),
+            // not credited to a savings account, so it gets a receipt, not a deposit alert.
+            const isActivation = depInfo.payment_type === 'account_activation'
+              || String(depInfo.internal_reference || '').startsWith('PAY-ACT-');
+            const typeLabel = isActivation ? 'Account Activation Deposit' : 'Savings Deposit';
+            const messageText = isActivation
+              ? `Dear {{first_name}}, we have received your membership activation fee of UGX {{amount}}. TxRef: {{tx_ref}}. Thank you!`
+              : `Dear {{first_name}}, your {{payment_type}} of UGX {{amount}} has been received and credited to your SACCO account successfully. TxRef: {{tx_ref}}. Thank you!`;
             
             const { inngest } = await import('../../../../lib/inngest/client');
             await inngest.send({
+              // Replays of the same NaJiki event must not send a second SMS.
+              id: `deposit-sms-${reference}`,
               name: 'sms/dispatch',
               data: {
                 tenantId: depInfo.organization_id,
                 recipientPhone: phone,
                 message: messageText,
-                eventType: 'DEPOSIT_ALERT',
+                eventType: isActivation ? 'ACTIVATION_RECEIPT' : 'DEPOSIT_ALERT',
                 originUrl: req.url,
                 templateData: {
                   first_name: firstName,

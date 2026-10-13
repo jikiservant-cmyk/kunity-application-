@@ -310,7 +310,7 @@ export async function sendSms({
           .insert({
             tenant_id: tenantId,
             application_id: applicationId,
-            phone_number: recipientPhone,
+            phone_number: cleanPhone,
             compiled_message: finalMessage,
             cost: totalCost,
             transaction_type: 'debit',
@@ -329,7 +329,7 @@ export async function sendSms({
         .insert({
           tenant_id: tenantId,
           application_id: applicationId,
-          phone_number: recipientPhone,
+          phone_number: cleanPhone,
           compiled_message: finalMessage,
           cost: totalCost,
           transaction_type: 'debit',

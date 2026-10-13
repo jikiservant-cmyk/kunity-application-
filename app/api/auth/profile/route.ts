@@ -290,6 +290,9 @@ export async function POST(req: NextRequest) {
       .schema('kunity')
       .from('members')
       .insert(newMemberData);
+    // SMS SAFETY: only the request that created the row sends the welcome SMS. A racing
+    // request that hits the duplicate-key branch below must not send a second one.
+    const createdHere = !insertErr;
 
     if (insertErr) {
       // If a database trigger inserted a minimal row concurrently during auth signup:
@@ -323,13 +326,15 @@ export async function POST(req: NextRequest) {
     }
 
     // 7. Queue Member Welcome SMS Notification
-    if (phone) {
+    if (phone && createdHere) {
       const shortId = authenticatedUserId.slice(0, 8).toUpperCase();
       const saccoName = targetOrg.name || 'our SACCO';
       const welcomeMsg = `Hello ${firstName}, welcome to ${saccoName}! Your membership application has been submitted and is pending verification. Your Member ID is: ${shortId}.`;
       try {
         const { inngest } = await import('@/lib/inngest/client');
         await inngest.send({
+          // Deduplicates the welcome SMS per member for the event retention window.
+          id: `welcome-${authenticatedUserId}`,
           name: 'sms/dispatch',
           data: {
             tenantId: orgId,
