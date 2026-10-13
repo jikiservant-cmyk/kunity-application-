@@ -160,5 +160,45 @@ console.log('Member polling and admin confirm send the tenant code NaJiki scopes
   ok('admin confirm GET references tenantCode');
 }
 
+console.log('Payment codes match NaJiki exactly (src/lib/constants.ts PLATFORM_FEE_TYPES, scripts/seed.ts)');
+{
+  // Copied from najiki-finance2 @ 0bb3f06. NaJiki matches payment types by exact code, then
+  // classifies platform fees by code.toUpperCase().
+  const NAJIKI_PLATFORM_FEE_TYPES = ['SMS','BUY_SMS','SMS_TOPUP','ACTIVATION','ACCOUNT_ACTIVATION','SUBSCRIPTION','MONTHLY_SUBSCRIPTION','PLATFORM_FEE'];
+  // The sacco application's payment types as seeded in NaJiki.
+  const NAJIKI_SACCO_SEEDED_TYPES = ['deposit', 'loan_repayment', 'account_activation'];
+  // Kunity may send BUY_SMS, which is a platform code but is NOT seeded for sacco. It must be
+  // created in NaJiki before top-ups are classified as platform fees (see the notes in the PR).
+  const KUNITY_SENT_TYPES = ['deposit', 'account_activation', 'BUY_SMS'];
+
+  const { readdirSync, readFileSync, statSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const walk = (dir) => readdirSync(dir).flatMap((f) => {
+    const p = join(dir, f);
+    if (statSync(p).isDirectory()) return walk(p);
+    return /\.(ts|tsx)$/.test(f) ? [p] : [];
+  });
+  const sources = [...walk(new URL('../app', import.meta.url).pathname), ...walk(new URL('../lib', import.meta.url).pathname)];
+  const found = new Set();
+  for (const f of sources) {
+    const text = readFileSync(f, 'utf8');
+    for (const m of text.matchAll(/paymentTypeCode:\s*'([A-Za-z_]+)'/g)) found.add(m[1]);
+    for (const m of text.matchAll(/payment_type:\s*'([A-Za-z_]+)'/g)) found.add(m[1]);
+  }
+  for (const code of found) {
+    assert.ok(KUNITY_SENT_TYPES.includes(code), `Kunity sends an unexpected payment code: ${code}`);
+  }
+  ok(`every payment code Kunity sends is one NaJiki knows: ${[...found].join(', ')}`);
+
+  for (const code of ['deposit', 'loan_repayment', 'account_activation']) {
+    assert.ok(NAJIKI_SACCO_SEEDED_TYPES.includes(code));
+  }
+  assert.equal(NAJIKI_PLATFORM_FEE_TYPES.includes('ACCOUNT_ACTIVATION'), true);
+  assert.equal(NAJIKI_PLATFORM_FEE_TYPES.includes('DEPOSIT'), false);
+  ok('deposit and account_activation match NaJiki seeded types; activation is a platform fee, deposit is tenant collection');
+  assert.equal(NAJIKI_PLATFORM_FEE_TYPES.includes('BUY_SMS'), true);
+  ok('BUY_SMS is a platform fee code in NaJiki (still needs a payment type row for sacco in NaJiki)');
+}
+
 server.close();
 console.log(`\n${passed} NaJiki contract checks passed`);
