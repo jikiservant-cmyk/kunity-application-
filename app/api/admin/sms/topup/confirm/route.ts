@@ -112,11 +112,10 @@ export async function POST(req: NextRequest) {
       .select('code')
       .eq('id', tenantId)
       .maybeSingle();
-    if (!tenantRow?.code) {
-      return NextResponse.json({ error: 'Tenant code not found for this SACCO' }, { status: 400 });
-    }
+    // Same rule as when the payment was created (admin topup route): the tenant code, else the tenant id.
+    const najikiTenantCode: string = tenantRow?.code || tenantId;
     const najikiRes = await fetch(
-      `${apiUrl}/api/payments/${encodeURIComponent(intentId)}?tenantCode=${encodeURIComponent(tenantRow.code)}`,
+      `${apiUrl}/api/payments/${encodeURIComponent(intentId)}?tenantCode=${encodeURIComponent(najikiTenantCode)}`,
       {
       headers: {
         "Authorization": `Bearer ${apiKey}`,

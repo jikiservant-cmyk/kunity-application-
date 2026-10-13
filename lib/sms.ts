@@ -280,11 +280,26 @@ export async function sendSms({
       // SMS WORKFLOW FIX (2026-10-13): record the successful send in the SACCO's SMS log,
       // not only the failures, so admins can see what members were sent.
       let providerId: string | null = null;
+      let najikiSmsId: string | null = null;
       try {
         const body = await response.clone().json();
         providerId = body?.messageId || body?.id || body?.data?.messageId || null;
+        najikiSmsId = body?.smsId ? String(body.smsId) : null;
       } catch {
         providerId = null;
+      }
+      // Link NaJiki's smsId to this debit. If NaJiki later reports SMS_DELIVERY_UPDATE 'failed',
+      // the webhook finds the debit by this marker and refunds it.
+      if (najikiSmsId) {
+        const { error: linkErr } = await supabaseAdmin
+          .schema('public')
+          .from('wallet_transactions')
+          .update({ description: `najiki_sms:${najikiSmsId}` })
+          .eq('reference', resolvedIdempotencyKey)
+          .eq('direction', 'debit');
+        if (linkErr) {
+          console.error('[SMS Service] Could not link SMS to its debit; a failed delivery will need manual refund:', linkErr, { najikiSmsId });
+        }
       }
       const { error: sentLogErr } = await supabaseAdmin
         .schema('public')

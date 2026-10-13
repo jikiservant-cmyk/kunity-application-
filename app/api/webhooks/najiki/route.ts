@@ -51,6 +51,38 @@ function verifyWebhookSignature(
   return received.length === want.length && crypto.timingSafeEqual(received, want);
 }
 
+// Refund the wallet debit that paid for a NaJiki SMS that failed to deliver. Idempotent: the refund
+// reference is derived from smsId, and refund_sms_wallet never refunds the same reference twice.
+async function refundFailedSms(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  smsId: string
+): Promise<'refunded' | 'not_found' | 'error'> {
+  const { data: debit, error } = await supabaseAdmin
+    .schema('public')
+    .from('wallet_transactions')
+    .select('wallet_id, amount')
+    .eq('description', `najiki_sms:${smsId}`)
+    .eq('direction', 'debit')
+    .maybeSingle();
+  if (error) {
+    console.error('[Najiki Webhook] Could not look up SMS debit:', error);
+    return 'error';
+  }
+  if (!debit) return 'not_found';
+
+  const { error: refundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
+    p_wallet_id: debit.wallet_id,
+    p_amount: Number(debit.amount),
+    p_reference: `refund_najiki_${smsId}`,
+  });
+  if (refundErr) {
+    console.error('[Najiki Webhook] Refund RPC failed:', refundErr);
+    return 'error';
+  }
+  console.log(`[Najiki Webhook] Refunded failed SMS smsId=${smsId}`);
+  return 'refunded';
+}
+
 export async function POST(req: Request) {
   try {
     const rawBody = await req.text();
@@ -73,8 +105,22 @@ export async function POST(req: Request) {
 
     // SMS delivery updates share this endpoint (NaJiki sends them to the same webhook path).
     // They are not payments: acknowledge them so NaJiki does not treat the call as failed.
+    // A 'failed' update means NaJiki could not deliver the message, so the sender's wallet is refunded.
+    // The debit was linked to NaJiki's smsId when the message was queued (lib/sms.ts, messaging gateway).
     if (body?.eventType === 'SMS_DELIVERY_UPDATE') {
-      console.log(`[Najiki Webhook] SMS delivery update ${body.reference ?? body.smsId}: ${body.status}`);
+      const smsId = body.smsId ? String(body.smsId) : '';
+      console.log(`[Najiki Webhook] SMS delivery update ${body.reference ?? smsId}: ${body.status}`);
+      if (body.status === 'failed' && smsId) {
+        const outcome = await refundFailedSms(getSupabaseAdmin(), smsId);
+        if (outcome === 'error') {
+          // NaJiki does not retry delivery updates, so this must be visible in logs for manual refund.
+          console.error(`[Najiki Webhook] REFUND FAILED for smsId=${smsId}; needs manual review`);
+          return NextResponse.json({ error: 'Refund failed' }, { status: 500 });
+        }
+        if (outcome === 'not_found') {
+          console.warn(`[Najiki Webhook] No wallet debit linked to smsId=${smsId}; nothing to refund`);
+        }
+      }
       return NextResponse.json({ received: true, eventType: 'SMS_DELIVERY_UPDATE' });
     }
 

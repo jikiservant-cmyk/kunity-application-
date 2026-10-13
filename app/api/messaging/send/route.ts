@@ -6,8 +6,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { messagingLimiter } from '@/lib/rate-limit';
 
-// If running in edge or node without africastalking, we use fetch to their REST API.
-// Africastalking API: https://api.africastalking.com/version1/messaging
+// API-key SMS gateway. Sends through NaJiki (POST /api/messaging/send); NaJiki owns the
+// Africa's Talking dispatch and the sms_messages log.
 
 const MAX_RECIPIENTS = 100;
 const MAX_MESSAGE_CHARS = 1000;
@@ -15,19 +15,8 @@ const SENDER_ID_PATTERN = /^[A-Za-z0-9]{3,11}$/;
 const E164_PATTERN = /^\+\d{9,15}$/;
 const EVENT_CODE_PATTERN = /^[A-Za-z0-9_-]{1,50}$/;
 
-// Sender IDs an application may use. Anything else in `from` is dropped, never forwarded.
-// Set SMS_ALLOWED_SENDER_IDS to a comma-separated list of IDs registered with the provider.
-function allowedSenderIds(): Set<string> {
-  return new Set(
-    (process.env.SMS_ALLOWED_SENDER_IDS || '')
-      .split(',')
-      .map((v) => v.trim())
-      .filter(Boolean)
-  );
-}
 
-// Provider statuses meaning the recipient was NOT sent to (so it must not be billed).
-const REJECTED_STATUS = /invalid|blacklist|reject|insufficient|failed|unsupported|blocked/i;
+
 
 export async function POST(req: NextRequest) {
   try {
@@ -147,20 +136,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Bad Request: one or more phone numbers are invalid' }, { status: 400 });
     }
 
-    // 3. SMS Gateway Dispatch (Africa's Talking) - FAIL CLOSED
-    const atApiKey = process.env.AFRICASTALKING_API_KEY;
-    const atUsername = process.env.AFRICASTALKING_USERNAME || 'sandbox';
-
-    if (!atApiKey || atApiKey.trim() === '' || atApiKey === 'YOUR_AFRICASTALKING_API_KEY') {
-      console.error('[NaJiki Gateway] ERROR: AFRICASTALKING_API_KEY is not configured. Request rejected (fail-closed).');
-      return NextResponse.json({
-        error: 'SMS service unavailable: Gateway credentials (AFRICASTALKING_API_KEY) are not configured on server',
-        provider: 'africastalking'
-      }, { status: 503 });
+    // 3. SMS dispatch goes through NaJiki, the only SMS path (see lib/sms.ts).
+    //    NaJiki queues each message and answers 202 with its smsId. A later delivery failure
+    //    arrives as an SMS_DELIVERY_UPDATE webhook, which refunds that recipient's charge.
+    const najikiUrl = process.env.NAJIKI_API_URL;
+    const najikiKey = process.env.NAJIKI_API_KEY;
+    const najikiAppCode = process.env.NAJIKI_APPLICATION_CODE || 'sacco';
+    if (!najikiUrl || !najikiKey) {
+      console.error('[messaging] NaJiki is not configured (NAJIKI_API_URL / NAJIKI_API_KEY). Request rejected (fail-closed).');
+      return NextResponse.json({ error: 'SMS service unavailable: NaJiki gateway is not configured on server' }, { status: 503 });
     }
+    const najikiBase = najikiUrl.replace(/\/+$/, '');
 
-    // FIN-37: bill the tenant's SMS wallet BEFORE dispatch (same rate rules as
-    // lib/sms.ts). One idempotent debit covers the whole batch.
+    // FIN-37: bill the tenant's SMS wallet BEFORE dispatch (same rate rules as lib/sms.ts).
     // SECURITY (pentest 2026-10-13): count real segments (GSM-7 or UCS-2), not a fixed 160.
     const segments = smsSegments(message.trim());
     const { data: wallet } = await supabaseAdmin
@@ -175,7 +163,8 @@ export async function POST(req: NextRequest) {
     }
     const parsedRate = parseFloat(String(wallet.sms_rate ?? ''));
     const costPerSms = Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : 50.0;
-    const totalCost = segments * costPerSms * normalizedNumbers.length;
+    const perSmsCost = segments * costPerSms;
+    const totalCost = perSmsCost * normalizedNumbers.length;
     if (parseFloat(String(wallet.balance)) < totalCost) {
       return NextResponse.json({ error: 'Insufficient SMS wallet balance' }, { status: 402 });
     }
@@ -191,132 +180,108 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Duplicate request: this Idempotency-Key was already used. Nothing was sent.' }, { status: 409 });
       }
     }
+
     const releaseClaim = async () => {
       if (idempotencyKeyHeader === null) return;
       await supabaseAdmin.schema('public').from('sms_idempotency_keys')
         .delete().eq('scope', idemScope).eq('idem_key', idempotencyKeyHeader);
     };
 
-    const debitKey = `api_${crypto.randomUUID()}`;
-    const { error: debitErr } = await supabaseAdmin.rpc('debit_sms_wallet', {
-      p_wallet_id: wallet.id,
-      p_amount: totalCost,
-      p_idempotency_key: debitKey,
-      p_tenant_id: tenant.id,
-      p_description: `API SMS dispatch (${normalizedNumbers.length} recipient(s))`
-    });
-    if (debitErr) {
-      // Nothing was billed or sent, so the client may retry with the same key.
-      await releaseClaim();
-      console.error('[messaging] wallet debit failed:', debitErr);
-      return NextResponse.json({ error: 'Insufficient SMS wallet balance' }, { status: 402 });
-    }
+    // One debit and one NaJiki request per recipient, so a later failure refunds exactly one share.
+    const requestId = crypto.randomUUID();
+    type Outcome = { number: string; status: 'queued' | 'rejected' | 'unconfirmed' | 'not_sent'; smsId?: string; reference?: string; deduplicated?: boolean; error?: string };
+    const outcomes: Outcome[] = [];
 
-    // Refund helper: used only when the provider definitively rejects the batch.
-    const refundBatch = async () => {
-      const { error: refundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
+    for (let i = 0; i < normalizedNumbers.length; i++) {
+      const number = normalizedNumbers[i];
+      const debitKey = `api_${requestId}_${i}`;
+
+      const { error: debitErr } = await supabaseAdmin.rpc('debit_sms_wallet', {
         p_wallet_id: wallet.id,
-        p_amount: totalCost,
-        p_reference: `refund_${debitKey}`
+        p_amount: perSmsCost,
+        p_idempotency_key: debitKey,
+        p_tenant_id: tenant.id,
+        p_description: `API SMS dispatch to ${number}`,
       });
-      if (refundErr) console.error('[messaging] refund failed, needs manual review:', refundErr);
-    };
-
-    // Real Africastalking dispatch
-    const url = atUsername === 'sandbox' 
-      ? 'https://api.sandbox.africastalking.com/version1/messaging' 
-      : 'https://api.africastalking.com/version1/messaging';
-
-    const formParams = new URLSearchParams();
-    formParams.append('username', atUsername);
-    formParams.append('to', normalizedNumbers.join(','));
-    formParams.append('message', message);
-    // Only an allowlisted sender ID is forwarded. Any other value is dropped.
-    if (from) {
-      if (allowedSenderIds().has(from)) {
-        formParams.append('from', from);
-      } else {
-        console.warn(`[messaging] sender ID "${from}" is not allowlisted; using the provider default.`);
-      }
-    }
-
-    const atResponse = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'apiKey': atApiKey
-      },
-      body: formParams.toString()
-    });
-
-    if (!atResponse.ok) {
-      await refundBatch();
-      const errText = await atResponse.text();
-      console.error('[NaJiki Gateway] AfricasTalking HTTP error:', atResponse.status, errText);
-      return NextResponse.json({
-        error: `SMS gateway dispatch failed with status ${atResponse.status}`,
-        details: errText
-      }, { status: 502 });
-    }
-
-    const atResult = await atResponse.json();
-    
-    // 4. Tracking, Cost Auditing, and Logging - Only log verified provider responses
-    const responses = atResult?.SMSMessageData?.Recipients || [];
-    
-    if (responses.length === 0) {
-      await refundBatch();
-      const providerMsg = atResult?.SMSMessageData?.Message || 'No recipients processed by SMS provider';
-      console.error('[NaJiki Gateway] AfricasTalking returned no recipients:', providerMsg);
-      return NextResponse.json({
-        error: `SMS provider error: ${providerMsg}`,
-        details: atResult
-      }, { status: 502 });
-    }
-
-    // SECURITY (pentest 2026-10-13): the provider rejects some numbers (invalid, blacklisted).
-    // Those were billed up front, so refund each rejected recipient's share.
-    const rejected = responses.filter((r: any) => REJECTED_STATUS.test(String(r?.status || '')));
-    if (rejected.length > 0) {
-      const perRecipient = totalCost / normalizedNumbers.length;
-      const refundAmount = perRecipient * rejected.length;
-      const { error: partialRefundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
-        p_wallet_id: wallet.id,
-        p_amount: refundAmount,
-        p_reference: `refund_partial_${debitKey}`
-      });
-      if (partialRefundErr) console.error('[messaging] partial refund failed, needs manual review:', partialRefundErr);
-    }
-
-    for (const recipient of responses) {
-      let cost = 0;
-      // AfricasTalking returns cost like 'UGX 40.00' or 'KES 1.00'
-      if (recipient.cost) {
-        const parts = recipient.cost.split(' ');
-        if (parts.length === 2) {
-          cost = parseFloat(parts[1]);
+      if (debitErr) {
+        // Nothing is charged or sent for this recipient or any after it.
+        console.error('[messaging] wallet debit failed:', debitErr);
+        for (let j = i; j < normalizedNumbers.length; j++) {
+          outcomes.push({ number: normalizedNumbers[j], status: 'not_sent', error: 'Insufficient SMS wallet balance' });
         }
+        break;
       }
-      
-      await supabaseAdmin
-        .from('sms_messages')
-        .insert({
-          tenant_id: tenant?.id || null,
-          application_id: app.id,
-          phone_number: recipient.number,
-          compiled_message: message,
-          cost: cost,
-          status: recipient.status,
-          provider_message_id: recipient.messageId,
-          event_code: finalEventCode || null
+
+      // Stable per-recipient key: a retry of the same request maps to the same NaJiki message.
+      const najikiIdem = idempotencyKeyHeader !== null ? `${idempotencyKeyHeader}-${i}` : `api-${debitKey}`;
+      let resp: Response | null = null;
+      try {
+        resp = await fetch(`${najikiBase}/api/messaging/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${najikiKey}`,
+            'Idempotency-Key': najikiIdem,
+          },
+          body: JSON.stringify({
+            applicationCode: najikiAppCode,
+            to: number,
+            message,
+            idempotencyKey: najikiIdem,
+          }),
+          signal: AbortSignal.timeout(10000),
         });
+      } catch {
+        resp = null;
+      }
+
+      if (resp && resp.ok) {
+        const data: any = await resp.json().catch(() => ({}));
+        const smsId = data?.smsId ? String(data.smsId) : undefined;
+        if (smsId) {
+          // Record NaJiki's id on this debit, so a later SMS_DELIVERY_UPDATE 'failed' can find it.
+          const { error: linkErr } = await supabaseAdmin
+            .schema('public')
+            .from('wallet_transactions')
+            .update({ description: `najiki_sms:${smsId}` })
+            .eq('reference', debitKey)
+            .eq('direction', 'debit');
+          if (linkErr) console.error('[messaging] could not link SMS to its debit, failure refunds need manual review:', linkErr, { smsId, debitKey });
+        }
+        outcomes.push({ number, status: 'queued', smsId, reference: data?.reference, deduplicated: !!data?.deduplicated });
+      } else if (resp && resp.status >= 400 && resp.status < 500) {
+        // NaJiki refused this message outright, so it was never sent. Refund this recipient.
+        const { error: refundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
+          p_wallet_id: wallet.id,
+          p_amount: perSmsCost,
+          p_reference: `refund_${debitKey}`,
+        });
+        if (refundErr) console.error('[messaging] refund failed, needs manual review:', refundErr);
+        outcomes.push({ number, status: 'rejected', error: `NaJiki rejected the message (HTTP ${resp.status})` });
+      } else {
+        // 5xx or no response: NaJiki may already have queued it. Keep the charge (no refund, so
+        // nothing can be sent twice for free) and report it as unconfirmed.
+        console.error('[messaging] NaJiki did not confirm the message:', resp?.status ?? 'network error');
+        outcomes.push({ number, status: 'unconfirmed', error: 'NaJiki did not confirm. Not refunded; check before resending.' });
+      }
     }
+
+    const queued = outcomes.filter((o) => o.status === 'queued').length;
+    // Nothing was queued and nothing is pending, so nothing was sent or kept. Free the key so the
+    // client can retry the same request.
+    if (queued === 0 && !outcomes.some((o) => o.status === 'unconfirmed')) {
+      await releaseClaim();
+    }
+    const httpStatus = queued > 0 || outcomes.some((o) => o.status === 'unconfirmed') ? 202 : 422;
 
     return NextResponse.json({
-      success: true,
-      responses: responses
-    }, { status: 201 });
+      success: queued > 0,
+      queued,
+      rejected: outcomes.filter((o) => o.status === 'rejected').length,
+      unconfirmed: outcomes.filter((o) => o.status === 'unconfirmed').length,
+      notSent: outcomes.filter((o) => o.status === 'not_sent').length,
+      responses: outcomes,
+    }, { status: httpStatus });
 
   } catch (err: unknown) {
     const message =

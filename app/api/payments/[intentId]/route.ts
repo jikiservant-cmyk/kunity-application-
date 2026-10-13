@@ -36,7 +36,7 @@ export async function GET(
     const { data: requestRecord } = await supabaseAdmin
       .schema('kunity')
       .from('payment_requests')
-      .select('member_id, status')
+      .select('member_id, status, organization_id')
       .eq('internal_reference', intentId)
       .maybeSingle();
 
@@ -59,12 +59,26 @@ export async function GET(
 
     const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
     const apiKey = process.env.NAJIKI_API_KEY || "";
-    const response = await fetch(`${apiUrl}/api/payments/${encodeURIComponent(intentId)}`, {
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
+    // NaJiki returns 404 for a tenant-scoped payment unless the caller names the same tenant code
+    // that was sent when the payment was created (see /api/payments/intent). Use the same lookup.
+    let tenantCode: string = requestRecord.organization_id;
+    const { data: tenantRow } = await supabaseAdmin
+      .schema('public')
+      .from('tenants')
+      .select('code')
+      .eq('id', requestRecord.organization_id)
+      .maybeSingle();
+    if (tenantRow?.code) tenantCode = tenantRow.code;
+
+    const response = await fetch(
+      `${apiUrl}/api/payments/${encodeURIComponent(intentId)}?tenantCode=${encodeURIComponent(tenantCode)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        }
       }
-    });
+    );
     if (!response.ok) {
       return NextResponse.json(
         { error: `Failed to fetch payment status: ${response.statusText}` },

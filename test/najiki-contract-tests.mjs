@@ -31,8 +31,14 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'svc-test';
 const rpcCalls = [];
 const server = http.createServer(async (req, res) => {
   let raw = ''; for await (const c of req) raw += c;
-  rpcCalls.push(req.url);
-  res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}');
+  rpcCalls.push({ url: req.url, body: raw });
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  // A SMS debit lookup returns the linked wallet debit; everything else returns an empty object.
+  if (req.url.includes('/wallet_transactions')) {
+    res.end(JSON.stringify({ wallet_id: 'wallet-a', amount: 50 }));
+  } else {
+    res.end('{}');
+  }
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 process.env.NEXT_PUBLIC_SUPABASE_URL = `http://127.0.0.1:${server.address().port}`;
@@ -111,13 +117,47 @@ console.log('SMS delivery updates on the same endpoint');
   const res = await post(smsBody, najikiNotificationHeaders(SECRET, smsBody));
   assert.equal(res.status, 200);
   assert.equal((await res.json()).eventType, 'SMS_DELIVERY_UPDATE');
-  assert.equal(rpcCalls.length, before, 'an SMS update must not touch payment processing');
+  assert.equal(rpcCalls.slice(before).filter((c) => !c.url.includes('wallet_transactions') && !c.url.includes('refund_sms_wallet')).length, 0, 'an SMS update must not touch payment processing');
   ok('signed SMS_DELIVERY_UPDATE is acknowledged (200) and never processed as a payment');
 }
 {
   const res = await post(smsBody, najikiNotificationHeaders('wrong', smsBody));
   assert.equal(res.status, 401);
   ok('unsigned SMS update is still rejected');
+}
+{
+  const failedBody = JSON.stringify({
+    eventType: 'SMS_DELIVERY_UPDATE', smsId: 'cm456', reference: 'SACCO-SMS-2',
+    status: 'failed', error: 'AT rejected', recipient: '+256772123456', applicationCode: 'sacco',
+  });
+  const before = rpcCalls.length;
+  const res = await post(failedBody, najikiNotificationHeaders(SECRET, failedBody));
+  assert.equal(res.status, 200);
+  const refund = rpcCalls.slice(before).find((c) => c.url.includes('/rpc/refund_sms_wallet'));
+  assert.ok(refund, 'a failed SMS must call refund_sms_wallet');
+  const args = JSON.parse(refund.body);
+  assert.equal(args.p_reference, 'refund_najiki_cm456');
+  assert.equal(args.p_amount, 50);
+  assert.equal(args.p_wallet_id, 'wallet-a');
+  ok('failed SMS_DELIVERY_UPDATE refunds the linked debit once (idempotent reference)');
+}
+{
+  const before = rpcCalls.length;
+  const res = await post(smsBody, najikiNotificationHeaders(SECRET, smsBody));
+  assert.equal(res.status, 200);
+  assert.equal(rpcCalls.slice(before).filter((c) => c.url.includes('refund_sms_wallet')).length, 0);
+  ok('delivered SMS_DELIVERY_UPDATE does not refund');
+}
+
+console.log('Member polling and admin confirm send the tenant code NaJiki scopes by');
+{
+  const { readFileSync } = await import('node:fs');
+  const poll = readFileSync(new URL('../app/api/payments/[intentId]/route.ts', import.meta.url), 'utf8');
+  const confirm = readFileSync(new URL('../app/api/admin/sms/topup/confirm/route.ts', import.meta.url), 'utf8');
+  assert.match(poll, /tenantCode=\$\{encodeURIComponent\(tenantCode\)\}/);
+  ok('member polling GET passes tenantCode (NaJiki returns 404 for a tenant-scoped intent without it)');
+  assert.match(confirm, /tenantCode/);
+  ok('admin confirm GET references tenantCode');
 }
 
 server.close();
