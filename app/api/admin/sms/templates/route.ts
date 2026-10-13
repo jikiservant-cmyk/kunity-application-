@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { validateTemplatePlaceholders, SmsEventType } from '../../../../../lib/sms-templates';
+import { validateTemplatePlaceholders, SmsEventType, SMS_EVENTS } from '../../../../../lib/sms-templates';
+import { logAudit } from '../../../../../lib/audit-logger';
+
+// SECURITY (pentest 2026-10-13, messaging): templates are only for the known event types.
+const MAX_TEMPLATE_CHARS = 480;
 
 export async function POST(req: Request) {
   try {
@@ -55,6 +59,15 @@ export async function POST(req: Request) {
     if (!event_type || !template_text) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+    if (typeof event_type !== 'string' || !Object.prototype.hasOwnProperty.call(SMS_EVENTS, event_type)) {
+      return NextResponse.json({ error: `Unknown event type. Allowed: ${Object.keys(SMS_EVENTS).join(', ')}` }, { status: 400 });
+    }
+    if (typeof template_text !== 'string') {
+      return NextResponse.json({ error: 'template_text must be text' }, { status: 400 });
+    }
+    if (template_text.length > MAX_TEMPLATE_CHARS) {
+      return NextResponse.json({ error: `Template is longer than ${MAX_TEMPLATE_CHARS} characters` }, { status: 400 });
+    }
 
     // 1. Validate the placeholders against the schema
     const invalidPlaceholders = validateTemplatePlaceholders(event_type as SmsEventType, template_text);
@@ -83,6 +96,16 @@ export async function POST(req: Request) {
     if (error) {
       throw error;
     }
+
+    await logAudit(supabaseAdmin, {
+      adminId: user.id,
+      tenantId,
+      action: 'sms_template_saved',
+      entityType: 'sms_templates',
+      entityId: data?.id,
+      newData: { event_type, length: template_text.length },
+      userAgent: req.headers.get('user-agent') || undefined,
+    });
 
     return NextResponse.json({ success: true, data });
 

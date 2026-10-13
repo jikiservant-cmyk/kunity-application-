@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import { hashApiKey } from '@/lib/api-keys';
+import { smsSegments } from '@/lib/sms-segments';
+import { claimIdempotencyKey, isValidIdempotencyKey } from '@/lib/sms-idempotency';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { messagingLimiter } from '@/lib/rate-limit';
@@ -11,6 +13,21 @@ const MAX_RECIPIENTS = 100;
 const MAX_MESSAGE_CHARS = 1000;
 const SENDER_ID_PATTERN = /^[A-Za-z0-9]{3,11}$/;
 const E164_PATTERN = /^\+\d{9,15}$/;
+const EVENT_CODE_PATTERN = /^[A-Za-z0-9_-]{1,50}$/;
+
+// Sender IDs an application may use. Anything else in `from` is dropped, never forwarded.
+// Set SMS_ALLOWED_SENDER_IDS to a comma-separated list of IDs registered with the provider.
+function allowedSenderIds(): Set<string> {
+  return new Set(
+    (process.env.SMS_ALLOWED_SENDER_IDS || '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean)
+  );
+}
+
+// Provider statuses meaning the recipient was NOT sent to (so it must not be billed).
+const REJECTED_STATUS = /invalid|blacklist|reject|insufficient|failed|unsupported|blocked/i;
 
 export async function POST(req: NextRequest) {
   try {
@@ -56,6 +73,18 @@ export async function POST(req: NextRequest) {
     const { to, message, tenantCode, eventCode, eventType, from } = body;
     const finalEventCode = eventCode || eventType;
 
+    // SECURITY (pentest 2026-10-13, messaging): optional request key. A retry with the same key
+    // is refused instead of being sent and billed again.
+    const idempotencyKeyHeader = req.headers.get('idempotency-key');
+    if (idempotencyKeyHeader !== null && !isValidIdempotencyKey(idempotencyKeyHeader)) {
+      return NextResponse.json({ error: 'Bad Request: Idempotency-Key must be 8-100 characters of A-Z, a-z, 0-9, _ or -' }, { status: 400 });
+    }
+
+    if (finalEventCode !== undefined && finalEventCode !== null
+      && (typeof finalEventCode !== 'string' || !EVENT_CODE_PATTERN.test(finalEventCode))) {
+      return NextResponse.json({ error: 'Bad Request: "eventCode" must be 1-50 letters, digits, _ or -' }, { status: 400 });
+    }
+
     if (!to || !message) {
       return NextResponse.json({ error: 'Bad Request: "to" and "message" are required' }, { status: 400 });
     }
@@ -73,7 +102,7 @@ export async function POST(req: NextRequest) {
 
     // FIN-37: tenantCode is REQUIRED. Without it the message had no tenant to
     // bill, so any application key could send SMS at the platform's expense.
-    if (!tenantCode) {
+    if (!tenantCode || typeof tenantCode !== 'string') {
       return NextResponse.json({ error: 'Bad Request: "tenantCode" is required' }, { status: 400 });
     }
 
@@ -132,7 +161,8 @@ export async function POST(req: NextRequest) {
 
     // FIN-37: bill the tenant's SMS wallet BEFORE dispatch (same rate rules as
     // lib/sms.ts). One idempotent debit covers the whole batch.
-    const segments = message.trim().length > 160 ? Math.ceil(message.trim().length / 153) : 1;
+    // SECURITY (pentest 2026-10-13): count real segments (GSM-7 or UCS-2), not a fixed 160.
+    const segments = smsSegments(message.trim());
     const { data: wallet } = await supabaseAdmin
       .schema('public')
       .from('wallets')
@@ -150,6 +180,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Insufficient SMS wallet balance' }, { status: 402 });
     }
 
+    // Claim the request key before anything is billed or sent.
+    const idemScope = `api:${app.id}`;
+    if (idempotencyKeyHeader !== null) {
+      const claim = await claimIdempotencyKey(supabaseAdmin, idemScope, idempotencyKeyHeader);
+      if (claim.error) {
+        return NextResponse.json({ error: 'Could not record the request. Try again.' }, { status: 500 });
+      }
+      if (!claim.claimed) {
+        return NextResponse.json({ error: 'Duplicate request: this Idempotency-Key was already used. Nothing was sent.' }, { status: 409 });
+      }
+    }
+    const releaseClaim = async () => {
+      if (idempotencyKeyHeader === null) return;
+      await supabaseAdmin.schema('public').from('sms_idempotency_keys')
+        .delete().eq('scope', idemScope).eq('idem_key', idempotencyKeyHeader);
+    };
+
     const debitKey = `api_${crypto.randomUUID()}`;
     const { error: debitErr } = await supabaseAdmin.rpc('debit_sms_wallet', {
       p_wallet_id: wallet.id,
@@ -159,6 +206,8 @@ export async function POST(req: NextRequest) {
       p_description: `API SMS dispatch (${normalizedNumbers.length} recipient(s))`
     });
     if (debitErr) {
+      // Nothing was billed or sent, so the client may retry with the same key.
+      await releaseClaim();
       console.error('[messaging] wallet debit failed:', debitErr);
       return NextResponse.json({ error: 'Insufficient SMS wallet balance' }, { status: 402 });
     }
@@ -182,8 +231,13 @@ export async function POST(req: NextRequest) {
     formParams.append('username', atUsername);
     formParams.append('to', normalizedNumbers.join(','));
     formParams.append('message', message);
+    // Only an allowlisted sender ID is forwarded. Any other value is dropped.
     if (from) {
-      formParams.append('from', from);
+      if (allowedSenderIds().has(from)) {
+        formParams.append('from', from);
+      } else {
+        console.warn(`[messaging] sender ID "${from}" is not allowlisted; using the provider default.`);
+      }
     }
 
     const atResponse = await fetch(url, {
@@ -219,6 +273,20 @@ export async function POST(req: NextRequest) {
         error: `SMS provider error: ${providerMsg}`,
         details: atResult
       }, { status: 502 });
+    }
+
+    // SECURITY (pentest 2026-10-13): the provider rejects some numbers (invalid, blacklisted).
+    // Those were billed up front, so refund each rejected recipient's share.
+    const rejected = responses.filter((r: any) => REJECTED_STATUS.test(String(r?.status || '')));
+    if (rejected.length > 0) {
+      const perRecipient = totalCost / normalizedNumbers.length;
+      const refundAmount = perRecipient * rejected.length;
+      const { error: partialRefundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
+        p_wallet_id: wallet.id,
+        p_amount: refundAmount,
+        p_reference: `refund_partial_${debitKey}`
+      });
+      if (partialRefundErr) console.error('[messaging] partial refund failed, needs manual review:', partialRefundErr);
     }
 
     for (const recipient of responses) {

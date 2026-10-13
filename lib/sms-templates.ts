@@ -64,9 +64,12 @@ export function interpolateTemplate(template: string, data: Record<string, strin
     }
   }
 
-  for (const [key, value] of Object.entries(normalizedData)) {
-    const placeholder = `{{${key}}}`;
-    result = result.split(placeholder).join(String(value ?? ''));
-  }
-  return result;
+  // SECURITY (pentest 2026-10-13): substitute in ONE pass. The old per-key replacement
+  // re-expanded placeholders that came from values, so a name such as "{{tx_ref}}" was
+  // filled in with another field's value.
+  return result.replace(/\{\{([^{}]+)\}\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(normalizedData, key)
+      ? String(normalizedData[key] ?? '')
+      : match
+  );
 }

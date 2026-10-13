@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { interpolateTemplate } from './sms-templates';
 import { normalizeUgandanPhone } from './validators';
+import { smsSegments } from './sms-segments';
 
 export interface SmsResult {
   success: boolean;
@@ -99,11 +100,8 @@ export async function sendSms({
     }
 
     // 1. Calculate message cost details
-    const textLength = finalMessage.trim().length;
-    let segments = 1;
-    if (textLength > 160) {
-      segments = Math.ceil(textLength / 153);
-    }
+    // SECURITY (pentest 2026-10-13): real GSM-7 / UCS-2 segment count.
+    const segments = smsSegments(finalMessage.trim());
     const defaultCostPerSms = 50.00;
 
     // 2. Fetch active wallet from public.wallets (Sacco schema)

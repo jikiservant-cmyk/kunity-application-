@@ -3,6 +3,13 @@ import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
+import { smsSegments } from '@/lib/sms-segments';
+import { claimIdempotencyKey, isValidIdempotencyKey } from '@/lib/sms-idempotency';
+import { normalizeUgandanPhone } from '@/lib/validators';
+
+// SECURITY (pentest 2026-10-13, messaging): limits on a single broadcast.
+const MAX_BROADCAST_MESSAGE_CHARS = 1000;
+const MAX_EXPLICIT_RECIPIENTS = 500;
 
 export async function POST(req: NextRequest) {
   try {
@@ -24,8 +31,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized: Missing session token' }, { status: 401 });
     }
 
-    if (!message || !message.trim()) {
+    if (typeof message !== 'string' || !message.trim()) {
       return NextResponse.json({ error: 'Message content cannot be empty' }, { status: 400 });
+    }
+    if (message.length > MAX_BROADCAST_MESSAGE_CHARS) {
+      return NextResponse.json({ error: `Message is longer than ${MAX_BROADCAST_MESSAGE_CHARS} characters` }, { status: 400 });
+    }
+    // Optional client request ID: a double-click or retry must not broadcast twice.
+    const requestId = body.requestId;
+    if (requestId !== undefined && requestId !== null && !isValidIdempotencyKey(requestId)) {
+      return NextResponse.json({ error: 'Invalid requestId' }, { status: 400 });
     }
 
     // 1. Verify Admin Authentication & Tenant Scope
@@ -67,6 +82,10 @@ export async function POST(req: NextRequest) {
     let recipients: { phone: string, firstName?: string, lastName?: string }[] = [];
     
     if (Array.isArray(body.recipients) && body.recipients.length > 0) {
+      // SECURITY (pentest 2026-10-13): explicit lists are capped.
+      if (body.recipients.length > MAX_EXPLICIT_RECIPIENTS) {
+        return NextResponse.json({ error: `At most ${MAX_EXPLICIT_RECIPIENTS} recipients per broadcast` }, { status: 400 });
+      }
       recipients = body.recipients.map((phone: string) => ({
         phone: typeof phone === 'string' ? phone : (phone as any).phone,
         firstName: 'Member'
@@ -99,6 +118,7 @@ export async function POST(req: NextRequest) {
     } else if (recipientType) {
       // It's a specific member ID or raw phone number
       if (recipientType.startsWith('07') || recipientType.startsWith('+256')) {
+        // A raw number: must belong to a member of this SACCO (checked below).
         recipients = [{ phone: recipientType, firstName: 'Member' }];
       } else {
         // Look up member strictly within admin's tenant
@@ -136,12 +156,47 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No valid recipients with phone numbers found for the selected audience.' }, { status: 400 });
     }
 
-    // 3. Calculate message cost details
-    const textLength = message.trim().length;
-    let segments = 1;
-    if (textLength > 160) {
-      segments = Math.ceil(textLength / 153);
+    // SECURITY (pentest 2026-10-13): a SACCO admin may message only that SACCO's members.
+    // Before this, any number typed into a broadcast was sent, at the SACCO's expense.
+    {
+      const memberPhones = new Set<string>();
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: page, error: pageErr } = await supabaseAdmin
+          .schema('kunity')
+          .from('members')
+          .select('phone')
+          .eq('organization_id', tenantId)
+          .range(from, from + pageSize - 1);
+        if (pageErr) {
+          return NextResponse.json({ error: 'Could not verify recipients. Try again.' }, { status: 500 });
+        }
+        for (const m of page || []) {
+          const n = normalizeUgandanPhone(m.phone);
+          if (n.valid) memberPhones.add(n.phone);
+        }
+        if (!page || page.length < pageSize) break;
+      }
+
+      const outside: string[] = [];
+      recipients = recipients.filter((r) => {
+        const n = normalizeUgandanPhone(r.phone);
+        if (!n.valid || !memberPhones.has(n.phone)) {
+          outside.push(String(r.phone));
+          return false;
+        }
+        return true;
+      });
+      if (outside.length > 0) {
+        return NextResponse.json({
+          error: `${outside.length} number(s) are not members of this SACCO, so they were not sent. Broadcasts go to members only.`
+        }, { status: 400 });
+      }
     }
+
+    // 3. Calculate message cost details
+    // SECURITY (pentest 2026-10-13): real GSM-7 / UCS-2 segment count.
+    const segments = smsSegments(message.trim());
 
     // 4. Fetch active wallet from public.wallets strictly scoped to tenant
     let wallet = null;
@@ -205,8 +260,21 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Queue SMS dispatches via Inngest
+    // Claim the request ID before anything is queued. A repeat is refused, nothing is sent.
+    if (requestId) {
+      const claim = await claimIdempotencyKey(supabaseAdmin, `broadcast:${tenantId}`, requestId);
+      if (claim.error) {
+        return NextResponse.json({ error: 'Could not record the broadcast. Try again.' }, { status: 500 });
+      }
+      if (!claim.claimed) {
+        return NextResponse.json({ error: 'This broadcast was already sent. Nothing was sent again.' }, { status: 409 });
+      }
+    }
+
     const { inngest } = await import('@/lib/inngest/client');
     const events = recipients.map(recipient => ({
+      // Inngest drops a repeated event id, so a retried queue step cannot dispatch twice.
+      ...(requestId ? { id: `broadcast-${requestId}-${normalizeUgandanPhone(recipient.phone).phone}` } : {}),
       name: 'sms/dispatch' as const,
       data: {
         tenantId,
@@ -220,7 +288,15 @@ export async function POST(req: NextRequest) {
 
     for (let i = 0; i < events.length; i += 100) {
       const batch = events.slice(i, i + 100);
-      await inngest.send(batch);
+      try {
+        await inngest.send(batch);
+      } catch (queueErr) {
+        // Earlier batches may already be queued, so the request ID stays claimed.
+        console.error('[sms-broadcast] queueing failed:', queueErr);
+        return NextResponse.json({
+          error: 'The broadcast could not be fully queued. Some messages may already have been sent. Check the SMS log before trying again.'
+        }, { status: 502 });
+      }
     }
 
     await logAudit(supabaseAdmin, {
@@ -232,6 +308,7 @@ export async function POST(req: NextRequest) {
         recipientsCount: recipients.length,
         recipientType,
         totalCost,
+        requestId: requestId || null,
       },
       userAgent: req.headers.get('user-agent') || undefined,
     });

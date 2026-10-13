@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import ProductsSettings from './ProductsSettings';
@@ -124,6 +124,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [savingsProducts, setSavingsProducts] = useState<any[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [smsBalance, setSmsBalance] = useState(0);
+  const smsRequestIdRef = useRef<string | null>(null);
   const [smsLowBalance, setSmsLowBalance] = useState(false);
   const [smsRate, setSmsRate] = useState(50);
   const [smsHistory, setSmsHistory] = useState<any[]>([]);
@@ -405,6 +406,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         return;
       }
 
+      // One request ID per draft: a retry after a lost response is refused by the server
+      // instead of broadcasting twice. A new draft gets a new ID.
+      if (!smsRequestIdRef.current) {
+        smsRequestIdRef.current = `bc-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      }
       const res = await fetch('/api/admin/sms/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -412,12 +418,14 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
           token: session.access_token,
           recipients,
           message: smsMessageText,
-          organizationId: orgId
+          organizationId: orgId,
+          requestId: smsRequestIdRef.current
         })
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
+        smsRequestIdRef.current = null;
         setToastMessage({ type: 'success', text: `Broadcast dispatched to ${recipients.length} recipients!` });
         setSmsMessageText('');
         await fetchAdminData();
