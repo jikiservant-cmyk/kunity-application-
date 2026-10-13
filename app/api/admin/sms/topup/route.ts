@@ -3,6 +3,7 @@ import { createServerClient } from '@supabase/ssr';
 import { paymentGateway } from '@/lib/payments/gateway';
 import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
+import { packForCredits, normalizeUgMomo } from '@/lib/sms-packs';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,14 +22,23 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, credits, amount, momoNumber } = body;
+    const { token, credits, momoNumber } = body;
 
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized: Missing token' }, { status: 401 });
     }
 
-    if (!credits || !amount || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ error: 'Invalid credits or price amount' }, { status: 400 });
+    // SECURITY (pentest 2026-10-13): the price is never taken from the client.
+    // The client picks a pack by its credit count; the server sets the price.
+    const pack = packForCredits(credits);
+    if (!pack) {
+      return NextResponse.json({ error: 'Invalid credit pack' }, { status: 400 });
+    }
+    const amount = pack.price;
+
+    const momo = normalizeUgMomo(momoNumber);
+    if (!momo) {
+      return NextResponse.json({ error: 'Invalid mobile money number' }, { status: 400 });
     }
 
     // Verify token using admin client
@@ -114,7 +124,7 @@ export async function POST(req: NextRequest) {
     // Create payment intent
     const intent = await paymentGateway.createPaymentIntent(amount, "UGX", {
       source: 'web_app',
-      phoneNumber: momoNumber,
+      phoneNumber: momo,
       organizationId: tenantId,
       tenantCode: tenantCode,
       paymentTypeCode: 'BUY_SMS',
@@ -141,7 +151,7 @@ export async function POST(req: NextRequest) {
       action: 'create_sms_topup_intent',
       entityType: 'payment_intent',
       entityId: intent.id,
-      newData: { amount, credits, momoNumber }
+      newData: { amount, credits: pack.credits, momoNumber: momo }
     });
 
     return NextResponse.json({

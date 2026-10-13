@@ -152,17 +152,16 @@ export async function POST(req: NextRequest) {
     const saccoName = kunityOrg?.name || tenantData?.name || 'SaccoConnect';
     const tenantCode = kunityOrg?.code || tenantData?.code || saccoName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     
-    let apiKey = '';
+    // SECURITY (pentest 2026-10-13): the API key is never returned again. Only whether one
+    // exists is shown; rotating (POST /api/admin/api-key) issues a new key once.
+    let apiKeySet = false;
     if (tenantData?.application_id) {
       const { data: appData } = await supabaseAdmin
         .from('applications')
-        .select('api_key')
+        .select('api_key_hash')
         .eq('id', tenantData.application_id)
         .maybeSingle();
-        
-      if (appData?.api_key) {
-        apiKey = appData.api_key;
-      }
+      apiKeySet = !!appData?.api_key_hash;
     }
 
     // 2. Fetch SMS Wallet Balance from Sacco Wallets (public.wallets)
@@ -319,7 +318,8 @@ export async function POST(req: NextRequest) {
       orgId,
       saccoName,
       tenantCode,
-      apiKey,
+      apiKey: '',
+      apiKeySet,
       allOrganizations: allOrgs,
       currentOrganization: kunityOrg || { id: orgId, name: saccoName, code: tenantCode },
       stats: {

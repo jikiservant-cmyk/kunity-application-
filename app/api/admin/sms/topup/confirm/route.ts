@@ -3,6 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
+import { packForPrice } from '@/lib/sms-packs';
 
 export async function POST(req: NextRequest) {
   try {
@@ -145,7 +146,9 @@ export async function POST(req: NextRequest) {
 
     const addedAmount = expectedAmount;
     // Credits are derived on the server from the stored amount, never taken from the client.
-    const creditsAdded = Math.floor(addedAmount / (parseFloat(existingWallet.sms_rate) || 50));
+    // Pack credits are the advertised count for this price; fall back to rate-derived count.
+    const creditsAdded = packForPrice(addedAmount)?.credits
+      ?? Math.floor(addedAmount / (parseFloat(existingWallet.sms_rate) || 50));
 
     // Credit wallet atomically via idempotent RPC with row lock on wallet_transactions.
     // SECURITY: There is deliberately NO fallback to the non-idempotent

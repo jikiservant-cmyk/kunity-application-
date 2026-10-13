@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { hashApiKey } from '@/lib/api-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { messagingLimiter } from '@/lib/rate-limit';
@@ -35,7 +36,8 @@ export async function POST(req: NextRequest) {
     const { data: app, error: appErr } = await supabaseAdmin
       .from('applications')
       .select('id, name')
-      .eq('api_key', apiKey)
+      // SECURITY (pentest 2026-10-13): keys are stored as SHA-256 digests only.
+      .eq('api_key_hash', hashApiKey(apiKey))
       .maybeSingle();
 
     if (appErr || !app) {

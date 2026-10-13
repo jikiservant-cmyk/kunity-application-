@@ -12,7 +12,7 @@ export async function GET() {
       return NextResponse.json({ error: 'Server configuration missing' }, { status: 500 });
     }
 
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const supabaseClient = createServerClient(supabaseUrl, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
       cookies: { get(name: string) { return cookieStore.get(name)?.value; } },
     });
