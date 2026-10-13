@@ -78,50 +78,77 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Rate limit exceeded for SMS broadcasts' }, { status: 429 });
     }
 
-    // 2. Resolve list of recipient phone numbers with STRICT tenant isolation
-    let recipients: { phone: string, firstName?: string, lastName?: string }[] = [];
-    
+    // 2. Resolve recipients. Member audiences are read from the database here, with paging,
+    //    so every member's number is included (PostgREST returns at most 1000 rows per query).
+    //    The browser never supplies the member list for these audiences.
+    const pageAll = async (fetchPage: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>) => {
+      const rows: any[] = [];
+      const pageSize = 1000;
+      const maxPages = 500; // 500,000 rows: a safety stop, far above any SACCO
+      for (let page = 0; page < maxPages; page++) {
+        const from = page * pageSize;
+        const { data, error } = await fetchPage(from, from + pageSize - 1);
+        if (error) return { rows: [] as any[], error };
+        rows.push(...(data || []));
+        if (!data || data.length < pageSize) break;
+      }
+      return { rows, error: null as any };
+    };
+
+    type RawRecipient = { phone: unknown; firstName?: string; lastName?: string };
+    let rawRecipients: RawRecipient[] = [];
+    let fromDatabase = false;
+    let explicitList = false;
+
     if (Array.isArray(body.recipients) && body.recipients.length > 0) {
-      // SECURITY (pentest 2026-10-13): explicit lists are capped.
+      // Explicit numbers typed by the admin: capped, and every number must be valid.
       if (body.recipients.length > MAX_EXPLICIT_RECIPIENTS) {
         return NextResponse.json({ error: `At most ${MAX_EXPLICIT_RECIPIENTS} recipients per broadcast` }, { status: 400 });
       }
-      recipients = body.recipients.map((phone: string) => ({
-        phone: typeof phone === 'string' ? phone : (phone as any).phone,
+      explicitList = true;
+      rawRecipients = body.recipients.map((phone: any) => ({
+        phone: typeof phone === 'string' ? phone : phone?.phone,
         firstName: 'Member'
       }));
     } else if (recipientType === 'all') {
-      // Get all members strictly belonging to this SACCO organization
-      const { data: members, error: mErr } = await supabaseAdmin
-        .schema('kunity')
-        .from('members')
-        .select('phone, first_name, last_name')
-        .eq('organization_id', tenantId);
-      
-      if (!mErr && members) {
-        recipients = members.filter(m => m.phone).map(m => ({ phone: m.phone, firstName: m.first_name, lastName: m.last_name }));
+      const { rows, error } = await pageAll((from, to) =>
+        supabaseAdmin
+          .schema('kunity')
+          .from('members')
+          .select('id, phone, first_name, last_name')
+          .eq('organization_id', tenantId)
+          .order('id')
+          .range(from, to)
+      );
+      if (error) {
+        return NextResponse.json({ error: 'Could not load the member list. Try again.' }, { status: 500 });
       }
+      fromDatabase = true;
+      rawRecipients = rows.map(m => ({ phone: m.phone, firstName: m.first_name, lastName: m.last_name }));
     } else if (recipientType === 'loans') {
-      // Get members with pending loans strictly in this SACCO organization
-      const { data: pendingLoans, error: lErr } = await supabaseAdmin
-        .schema('kunity')
-        .from('loans')
-        .select('organization_id, members!inner(phone, first_name, last_name, organization_id)')
-        .eq('status', 'pending')
-        .eq('organization_id', tenantId);
-      
-      if (!lErr && pendingLoans) {
-        recipients = pendingLoans
-          .filter((l: any) => l.members?.phone && l.members?.organization_id === tenantId)
-          .map((l: any) => ({ phone: l.members.phone, firstName: l.members.first_name, lastName: l.members.last_name }));
+      const { rows, error } = await pageAll((from, to) =>
+        supabaseAdmin
+          .schema('kunity')
+          .from('loans')
+          .select('id, organization_id, members!inner(phone, first_name, last_name, organization_id)')
+          .eq('status', 'pending')
+          .eq('organization_id', tenantId)
+          .order('id')
+          .range(from, to)
+      );
+      if (error) {
+        return NextResponse.json({ error: 'Could not load borrowers. Try again.' }, { status: 500 });
       }
+      fromDatabase = true;
+      rawRecipients = rows
+        .filter((l: any) => l.members?.organization_id === tenantId)
+        .map((l: any) => ({ phone: l.members.phone, firstName: l.members.first_name, lastName: l.members.last_name }));
     } else if (recipientType) {
-      // It's a specific member ID or raw phone number
       if (recipientType.startsWith('07') || recipientType.startsWith('+256')) {
         // A raw number: must belong to a member of this SACCO (checked below).
-        recipients = [{ phone: recipientType, firstName: 'Member' }];
+        rawRecipients = [{ phone: recipientType, firstName: 'Member' }];
       } else {
-        // Look up member strictly within admin's tenant
+        // A member ID: looked up strictly within the admin's tenant.
         const { data: member, error: mErr } = await supabaseAdmin
           .schema('kunity')
           .from('members')
@@ -129,64 +156,73 @@ export async function POST(req: NextRequest) {
           .eq('id', recipientType)
           .eq('organization_id', tenantId)
           .maybeSingle();
-        
+
         if (mErr || !member) {
           return NextResponse.json(
             { error: 'Forbidden: Target member not found or belongs to another SACCO tenant' },
             { status: 404 }
           );
         }
-
-        if (member.phone) {
-          recipients = [{ phone: member.phone, firstName: member.first_name, lastName: member.last_name }];
-        }
+        rawRecipients = member.phone
+          ? [{ phone: member.phone, firstName: member.first_name, lastName: member.last_name }]
+          : [];
       }
     }
 
-    // De-duplicate by phone
-    const seen = new Set();
-    recipients = recipients.filter(r => {
-      if (!r.phone) return false;
-      if (seen.has(r.phone)) return false;
-      seen.add(r.phone);
-      return true;
-    });
+    // Normalise every number to one format (E.164) and remove duplicates on that value, so the
+    // same person listed as 0772… and +256772… receives one SMS.
+    const invalidEntries: string[] = [];
+    const byPhone = new Map<string, { phone: string; firstName?: string; lastName?: string }>();
+    for (const r of rawRecipients) {
+      if (r.phone === undefined || r.phone === null || r.phone === '') continue;
+      const n = normalizeUgandanPhone(r.phone);
+      if (!n.valid) {
+        invalidEntries.push(String(r.phone));
+        continue;
+      }
+      if (!byPhone.has(n.phone)) {
+        byPhone.set(n.phone, { phone: n.phone, firstName: r.firstName, lastName: r.lastName });
+      }
+    }
+
+    // Explicit lists must be fully valid. Member records with bad numbers are skipped and counted.
+    if (explicitList && invalidEntries.length > 0) {
+      return NextResponse.json({
+        error: `These numbers are not valid Ugandan mobile numbers: ${invalidEntries.slice(0, 10).join(', ')}${invalidEntries.length > 10 ? ' …' : ''}`
+      }, { status: 400 });
+    }
+    const skippedInvalid = fromDatabase ? invalidEntries.length : 0;
+
+    let recipients = Array.from(byPhone.values());
 
     if (recipients.length === 0) {
-      return NextResponse.json({ error: 'No valid recipients with phone numbers found for the selected audience.' }, { status: 400 });
+      return NextResponse.json({
+        error: 'No valid recipients with phone numbers found for the selected audience.'
+      }, { status: 400 });
     }
 
     // SECURITY (pentest 2026-10-13): a SACCO admin may message only that SACCO's members.
-    // Before this, any number typed into a broadcast was sent, at the SACCO's expense.
-    {
+    // Member audiences are members by construction, so only typed numbers are checked here.
+    if (!fromDatabase) {
       const memberPhones = new Set<string>();
-      const pageSize = 1000;
-      for (let from = 0; ; from += pageSize) {
-        const { data: page, error: pageErr } = await supabaseAdmin
+      const { rows: memberRows, error: memberErr } = await pageAll((from, to) =>
+        supabaseAdmin
           .schema('kunity')
           .from('members')
-          .select('phone')
+          .select('id, phone')
           .eq('organization_id', tenantId)
-          .range(from, from + pageSize - 1);
-        if (pageErr) {
-          return NextResponse.json({ error: 'Could not verify recipients. Try again.' }, { status: 500 });
-        }
-        for (const m of page || []) {
-          const n = normalizeUgandanPhone(m.phone);
-          if (n.valid) memberPhones.add(n.phone);
-        }
-        if (!page || page.length < pageSize) break;
+          .order('id')
+          .range(from, to)
+      );
+      if (memberErr) {
+        return NextResponse.json({ error: 'Could not verify recipients. Try again.' }, { status: 500 });
+      }
+      for (const m of memberRows) {
+        const n = normalizeUgandanPhone(m.phone);
+        if (n.valid) memberPhones.add(n.phone);
       }
 
-      const outside: string[] = [];
-      recipients = recipients.filter((r) => {
-        const n = normalizeUgandanPhone(r.phone);
-        if (!n.valid || !memberPhones.has(n.phone)) {
-          outside.push(String(r.phone));
-          return false;
-        }
-        return true;
-      });
+      const outside = recipients.filter(r => !memberPhones.has(r.phone));
       if (outside.length > 0) {
         return NextResponse.json({
           error: `${outside.length} number(s) are not members of this SACCO, so they were not sent. Broadcasts go to members only.`
@@ -316,6 +352,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       recipientsCount: recipients.length,
+      skippedInvalid,
       costCredits: Math.ceil(totalCost / costPerSms),
       costUGX: totalCost,
       newBalanceCredits: Math.floor(currentBalance / costPerSms)

@@ -386,9 +386,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
+      // "All members" is resolved on the server from the database, so every member is included.
       let recipients: string[] = [];
       if (smsRecipientType === 'all') {
-        recipients = members.map(m => m.phone).filter(Boolean);
+        recipients = [];
       } else if (smsRecipientType === 'single') {
         if (!singleRecipientPhone.trim()) {
           setToastMessage({ type: 'error', text: 'Enter recipient phone number' });
@@ -400,7 +401,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         recipients = customPhoneList.split(/[\n,]+/).map(p => p.trim()).filter(Boolean);
       }
 
-      if (recipients.length === 0) {
+      if (smsRecipientType !== 'all' && recipients.length === 0) {
         setToastMessage({ type: 'error', text: 'No valid phone recipients selected' });
         setIsSendingSms(false);
         return;
@@ -416,6 +417,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: session.access_token,
+          recipientType: smsRecipientType === 'all' ? 'all' : undefined,
           recipients,
           message: smsMessageText,
           organizationId: orgId,
@@ -426,7 +428,9 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
       const data = await res.json();
       if (res.ok && data.success) {
         smsRequestIdRef.current = null;
-        setToastMessage({ type: 'success', text: `Broadcast dispatched to ${recipients.length} recipients!` });
+        const sent = data.recipientsCount ?? recipients.length;
+        const skipped = data.skippedInvalid ? ` (${data.skippedInvalid} member record(s) had no valid number and were skipped)` : '';
+        setToastMessage({ type: 'success', text: `Broadcast dispatched to ${sent} recipients!${skipped}` });
         setSmsMessageText('');
         await fetchAdminData();
       } else {
