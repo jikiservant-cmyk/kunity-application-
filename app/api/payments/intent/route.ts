@@ -96,6 +96,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid amount: must be a positive number' }, { status: 400, headers: corsHeaders });
     }
 
+    // This ledger and the SACCO products currently operate in UGX only. Never
+    // let a caller choose a different denomination for an otherwise identical
+    // numeric balance movement.
+    const requestedCurrency = currency == null
+      ? 'UGX'
+      : (typeof currency === 'string' ? currency.trim().toUpperCase() : '');
+    if (requestedCurrency !== 'UGX') {
+      return NextResponse.json({ error: 'Unsupported currency. Payments must be in UGX.' }, { status: 400, headers: corsHeaders });
+    }
+    const finalCurrency = 'UGX';
+
     // Apply rate limiting per member or phone number
     try {
       await paymentIntentLimiter.check(15, `payment:${authUser.id}`);
@@ -265,7 +276,7 @@ export async function POST(req: Request) {
       paymentTypeCode: paymentTypeCode || 'account_activation',
       externalEntityId: finalMemberId,
       amount: numericAmount,     // Ensure strict number type
-      currency: currency || 'UGX',
+      currency: finalCurrency,
       phoneNumber: phoneNumber,
       reference: idempotencyKey,
       idempotencyKey: idempotencyKey,
@@ -310,7 +321,7 @@ export async function POST(req: Request) {
     const intent = {
       id: najikiReference, // Use NaJiki reference as the ID so frontend can poll the correct endpoint
       amount: numericAmount,
-      currency: currency || 'UGX',
+      currency: finalCurrency,
       status: 'pending',
       providerInfo: data
     };
@@ -331,7 +342,7 @@ export async function POST(req: Request) {
       organization_id: finalOrganizationId,
       member_id: finalMemberId,
       amount: numericAmount,
-      currency: currency || 'UGX',
+      currency: finalCurrency,
       phone_number: phoneNumber,
       status: 'pending',
       direction: 'inbound',

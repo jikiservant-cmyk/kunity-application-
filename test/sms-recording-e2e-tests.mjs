@@ -120,6 +120,7 @@ await check('NaJiki 4xx: debit refunded and a "failed_refunded" row recorded', a
   const r = await send();
   assert.equal(r.success, false);
   assert.equal(state.refunds.length, 1);
+  assert.match(state.refunds[0].p_debit_reference, /^debit_[0-9a-f-]{36}$/);
   assert.equal(state.balance, 5000, 'balance restored');
   assert.equal(last().status, 'failed_refunded');
   assert.equal(last().phone_number, '+256772123456');

@@ -60,7 +60,7 @@ async function refundFailedSms(
   const { data: debit, error } = await supabaseAdmin
     .schema('public')
     .from('wallet_transactions')
-    .select('wallet_id, amount')
+    .select('wallet_id, amount, reference')
     .eq('description', `najiki_sms:${smsId}`)
     .eq('direction', 'debit')
     .maybeSingle();
@@ -74,6 +74,7 @@ async function refundFailedSms(
     p_wallet_id: debit.wallet_id,
     p_amount: Number(debit.amount),
     p_reference: `refund_najiki_${smsId}`,
+    p_debit_reference: debit.reference,
   });
   if (refundErr) {
     console.error('[Najiki Webhook] Refund RPC failed:', refundErr);
@@ -149,56 +150,87 @@ export async function POST(req: Request) {
 
     if (finalPaymentType === 'BUY_SMS' && (status === 'success' || status === 'successful')) {
       console.log(`[Najiki Webhook] Handling SMS Topup manually for reference=${reference}`);
-      
-      
-      // Fix: prevent filter injection by checking id and reference in two separate parameterized queries
+      if (!reference) {
+        return NextResponse.json({ error: 'Missing SMS top-up reference' }, { status: 400 });
+      }
+
+      // Resolve the ledger transaction by exact, parameterized id/reference lookup.
       let request = null;
-      // Try by UUID id if reference looks like a UUID
+      let lookupError = null;
       if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(reference)) {
-        const { data } = await supabaseAdmin
+        const { data, error } = await supabaseAdmin
           .schema('public')
           .from('wallet_transactions')
           .select('*')
           .eq('id', reference)
           .maybeSingle();
         request = data;
+        lookupError = error;
       }
-      if (!request) {
-        const { data } = await supabaseAdmin
+      if (!request && !lookupError) {
+        const { data, error } = await supabaseAdmin
           .schema('public')
           .from('wallet_transactions')
           .select('*')
           .eq('reference', reference)
           .maybeSingle();
         request = data;
+        lookupError = error;
+      }
+      if (lookupError) {
+        console.error('[Najiki Webhook] SMS top-up lookup failed:', lookupError);
+        return NextResponse.json({ error: 'Could not verify SMS top-up' }, { status: 500 });
+      }
+      if (!request) {
+        // Do not fall through to process_najiki_webhook: BUY_SMS is credited only
+        // from the SMS wallet ledger, so an absent row must remain unacknowledged.
+        return NextResponse.json({ error: 'SMS top-up transaction not found' }, { status: 409 });
+      }
+      if (request.type !== 'sms_topup' || request.direction !== 'credit') {
+        return NextResponse.json({ error: 'Transaction is not a pending SMS top-up' }, { status: 409 });
       }
 
+      const incomingAmount = Number(amount);
+      const storedAmount = Number(request.amount);
+      if (!Number.isFinite(incomingAmount) || incomingAmount <= 0
+          || !Number.isFinite(storedAmount) || storedAmount <= 0
+          || Math.abs(incomingAmount - storedAmount) > 0.01) {
+        console.error(`[Najiki Webhook] Invalid or mismatched SMS top-up amount: incoming ${amount} != stored ${request.amount}`);
+        return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
+      }
 
-      if (request && request.note !== 'success' && request.status !== 'success') {
-        // Cross-check incoming amount with stored transaction amount
-        if (Math.abs(Number(amount) - Number(request.amount)) > 0.01) {
-          console.error(`[Najiki Webhook] Amount mismatch: incoming ${amount} != stored ${request.amount}`);
-          return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
-        }
+      const incomingCurrency = typeof payloadData.currency === 'string'
+        ? payloadData.currency.trim().toUpperCase()
+        : '';
+      const storedCurrency = typeof request.currency === 'string' && request.currency.trim()
+        ? request.currency.trim().toUpperCase()
+        : 'UGX';
+      if (!incomingCurrency || incomingCurrency !== storedCurrency) {
+        console.error(`[Najiki Webhook] Invalid or mismatched SMS top-up currency: incoming ${incomingCurrency || '(missing)'} != stored ${storedCurrency}`);
+        return NextResponse.json({ error: 'Currency mismatch' }, { status: 409 });
+      }
 
-        const { error: creditErr } = await supabaseAdmin
-          .rpc('credit_sms_wallet_idempotent', {
-              p_wallet_id: request.wallet_id,
-              p_transaction_id: request.id,
-              p_amount: Number(request.amount)
-          });
-
-        if (!creditErr) {
-          console.log(`[Najiki Webhook] Successfully credited SMS wallet for reference=${reference}`);
-          return NextResponse.json({ success: true, message: 'SMS Topup credited' });
-        } else {
-           console.error('[Najiki Webhook] Error crediting wallet balance:', creditErr);
-           return NextResponse.json({ error: 'Failed to credit wallet' }, { status: 500 });
-        }
-      } else if (request && (request.note === 'success' || request.status === 'success')) {
+      if (request.note === 'success' || request.status === 'success') {
         console.log(`[Najiki Webhook] SMS Topup already processed for reference=${reference}`);
         return NextResponse.json({ success: true, message: 'Already processed' });
       }
+      if ((request.note && request.note !== 'pending')
+          || (request.status && request.status !== 'pending')) {
+        return NextResponse.json({ error: 'SMS top-up transaction is not pending' }, { status: 409 });
+      }
+
+      const { error: creditErr } = await supabaseAdmin.rpc('credit_sms_wallet_idempotent', {
+        p_wallet_id: request.wallet_id,
+        p_transaction_id: request.id,
+        p_amount: storedAmount,
+      });
+
+      if (creditErr) {
+        console.error('[Najiki Webhook] Error crediting wallet balance:', creditErr);
+        return NextResponse.json({ error: 'Failed to credit wallet' }, { status: 500 });
+      }
+      console.log(`[Najiki Webhook] Successfully credited SMS wallet for reference=${reference}`);
+      return NextResponse.json({ success: true, message: 'SMS Topup credited' });
     }
 
     

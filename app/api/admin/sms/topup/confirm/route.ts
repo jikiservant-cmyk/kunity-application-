@@ -129,7 +129,19 @@ export async function POST(req: NextRequest) {
     if (payment.status !== 'success' && payment.status !== 'successful') {
       return NextResponse.json({ error: 'Payment is not yet successful' }, { status: 400 });
     }
-    
+
+    // The SMS wallet is denominated in the currency stored with the top-up.
+    // Missing or mismatched gateway currency must not be treated as UGX.
+    const expectedCurrency = typeof request.currency === 'string' && request.currency.trim()
+      ? request.currency.trim().toUpperCase()
+      : 'UGX';
+    const gatewayCurrency = typeof payment.currency === 'string'
+      ? payment.currency.trim().toUpperCase()
+      : '';
+    if (!gatewayCurrency || gatewayCurrency !== expectedCurrency) {
+      return NextResponse.json({ error: 'Payment currency mismatch' }, { status: 400 });
+    }
+
     // Validate amount from gateway matches what we expect.
     // FIN-12: compare with a small tolerance — strict !== breaks when the
     // gateway returns the amount as a string or with different precision.

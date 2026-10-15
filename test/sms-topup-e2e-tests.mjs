@@ -23,6 +23,7 @@ const state = {
   najikiCreateMode: 'ok',// ok | error | pending_later
   najikiStatus: 'pending',// status returned by GET /api/payments/:ref
   najikiAmount: 10000,
+  najikiCurrency: 'UGX',
   ledgerInsertFail: false,
   events: [],            // ordered log: 'ledger_insert' | 'najiki_create' | 'ledger_link'
   creditCalls: 0,
@@ -53,7 +54,7 @@ const server = http.createServer(async (req, res) => {
     if (url.searchParams.get('tenantCode') !== 'sacco-a') {
       return json(404, { error: 'Payment not found (tenant mismatch)' });
     }
-    return json(200, { reference: decodeURIComponent(url.pathname.split('/').pop()), status: state.najikiStatus, amount: state.najikiAmount });
+    return json(200, { reference: decodeURIComponent(url.pathname.split('/').pop()), status: state.najikiStatus, amount: state.najikiAmount, currency: state.najikiCurrency });
   }
 
   // Supabase Auth
@@ -136,7 +137,7 @@ const call = async (handler, payload) => {
 };
 const reset = () => {
   state.balance = 0; state.ledger = []; state.najikiCalls = []; state.events = [];
-  state.najikiCreateMode = 'ok'; state.najikiStatus = 'pending'; state.ledgerInsertFail = false; state.creditCalls = 0;
+  state.najikiCreateMode = 'ok'; state.najikiStatus = 'pending'; state.najikiAmount = 10000; state.najikiCurrency = 'UGX'; state.ledgerInsertFail = false; state.creditCalls = 0;
 };
 
 let passed = 0;
@@ -224,6 +225,18 @@ console.log('Purchase: confirm and credit');
   assert.match(r.body.error, /amount mismatch/);
   assert.equal(state.balance, 0);
   ok('amount mismatch with NaJiki -> nothing credited');
+}
+{
+  reset();
+  await call(topup, buy);
+  state.najikiStatus = 'success';
+  state.najikiCurrency = 'USD';
+  const r = await call(confirm, { token: ADMIN_TOKEN, intentId: NAJIKI_REF });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /currency mismatch/i);
+  assert.equal(state.balance, 0);
+  assert.equal(state.creditCalls, 0);
+  ok('currency mismatch with NaJiki -> nothing credited');
 }
 
 server.close();

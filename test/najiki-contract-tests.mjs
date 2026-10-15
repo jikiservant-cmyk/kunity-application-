@@ -35,7 +35,7 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   // A SMS debit lookup returns the linked wallet debit; everything else returns an empty object.
   if (req.url.includes('/wallet_transactions')) {
-    res.end(JSON.stringify({ wallet_id: 'wallet-a', amount: 50 }));
+    res.end(JSON.stringify({ wallet_id: 'wallet-a', amount: 50, reference: 'debit-source-1' }));
   } else {
     res.end('{}');
   }
@@ -139,6 +139,7 @@ console.log('SMS delivery updates on the same endpoint');
   assert.equal(args.p_reference, 'refund_najiki_cm456');
   assert.equal(args.p_amount, 50);
   assert.equal(args.p_wallet_id, 'wallet-a');
+  assert.equal(args.p_debit_reference, 'debit-source-1');
   ok('failed SMS_DELIVERY_UPDATE refunds the linked debit once (idempotent reference)');
 }
 {

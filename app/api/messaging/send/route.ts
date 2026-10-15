@@ -255,6 +255,7 @@ export async function POST(req: NextRequest) {
           p_wallet_id: wallet.id,
           p_amount: perSmsCost,
           p_reference: `refund_${debitKey}`,
+          p_debit_reference: debitKey,
         });
         if (refundErr) console.error('[messaging] refund failed, needs manual review:', refundErr);
         outcomes.push({ number, status: 'rejected', error: `NaJiki rejected the message (HTTP ${resp.status})` });

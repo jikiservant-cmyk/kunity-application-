@@ -338,7 +338,8 @@ export async function sendSms({
           .rpc('refund_sms_wallet', {
             p_wallet_id: wallet.id,
             p_amount: totalCost,
-            p_reference: refundReference
+            p_reference: refundReference,
+            p_debit_reference: resolvedIdempotencyKey
           })
           .single();
 
