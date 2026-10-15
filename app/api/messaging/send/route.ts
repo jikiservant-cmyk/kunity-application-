@@ -5,6 +5,7 @@ import { claimIdempotencyKey, isValidIdempotencyKey } from '@/lib/sms-idempotenc
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { messagingLimiter } from '@/lib/rate-limit';
+import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
 // API-key SMS gateway. Sends through NaJiki (POST /api/messaging/send); NaJiki owns the
 // Africa's Talking dispatch and the sms_messages log.
@@ -146,7 +147,7 @@ export async function POST(req: NextRequest) {
       console.error('[messaging] NaJiki is not configured (NAJIKI_API_URL / NAJIKI_API_KEY). Request rejected (fail-closed).');
       return NextResponse.json({ error: 'SMS service unavailable: NaJiki gateway is not configured on server' }, { status: 503 });
     }
-    const najikiBase = najikiUrl.replace(/\/+$/, '');
+    const najikiBase = normalizeNajikiBaseUrl(najikiUrl);
 
     // FIN-37: bill the tenant's SMS wallet BEFORE dispatch (same rate rules as lib/sms.ts).
     // SECURITY (pentest 2026-10-13): count real segments (GSM-7 or UCS-2), not a fixed 160.
@@ -255,6 +256,7 @@ export async function POST(req: NextRequest) {
           p_wallet_id: wallet.id,
           p_amount: perSmsCost,
           p_reference: `refund_${debitKey}`,
+          p_debit_reference: debitKey,
         });
         if (refundErr) console.error('[messaging] refund failed, needs manual review:', refundErr);
         outcomes.push({ number, status: 'rejected', error: `NaJiki rejected the message (HTTP ${resp.status})` });

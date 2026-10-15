@@ -4,6 +4,7 @@ import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
 import { packForPrice } from '@/lib/sms-packs';
+import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function POST(req: NextRequest) {
   try {
@@ -100,9 +101,15 @@ export async function POST(req: NextRequest) {
          newBalanceCredits: Math.floor((w?.balance || 0) / (parseFloat(w?.sms_rate) || 50))
        });
     }
+    if (request.note === 'failed' || request.status === 'failed') {
+      return NextResponse.json(
+        { success: false, status: 'failed', error: 'Payment failed. No SMS credits were added.' },
+        { status: 409 }
+      );
+    }
 
     // Double check status with Najiki
-    const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
+    const apiUrl = normalizeNajikiBaseUrl(process.env.NAJIKI_API_URL || "https://najiki.netlify.app");
     const apiKey = process.env.NAJIKI_API_KEY || "";
     // NaJiki (GET /api/payments/[reference]) returns 404 for a tenant-scoped payment unless the
     // request names the same tenant code. Without this, every confirmation failed.
@@ -126,10 +133,57 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to verify payment with NaJiki' }, { status: 400 });
     }
     const payment = await najikiRes.json();
-    if (payment.status !== 'success' && payment.status !== 'successful') {
+    const gatewayStatus = String(payment?.status || '').toLowerCase();
+    if (['failed', 'failure', 'cancelled', 'canceled', 'expired', 'rejected'].includes(gatewayStatus)) {
+      // The authenticated NaJiki status lookup is a safe fallback when its
+      // outbound failure notification has not reached Kunity yet.
+      const providerAmount = Number(payment?.amount);
+      const storedAmount = Number(request.amount);
+      const { error: paymentStatusError } = await supabaseAdmin.schema('kunity').rpc('process_najiki_webhook', {
+        p_reference: intentId,
+        p_status: gatewayStatus,
+        p_amount: Number.isFinite(providerAmount) ? providerAmount : storedAmount,
+        p_fee: Number.isFinite(Number(payment?.fee)) ? Number(payment.fee) : 0,
+        p_external_entity_id: payment?.externalEntityId || tenantId,
+        p_payment_type: payment?.paymentType?.code || payment?.paymentTypeCode || 'BUY_SMS',
+        p_payload: payment,
+      });
+      if (paymentStatusError) {
+        console.error('[SMS Topup Confirm] Could not record terminal NaJiki failure:', paymentStatusError);
+      }
+
+      const { error: ledgerFailureError } = await supabaseAdmin
+        .schema('public')
+        .from('wallet_transactions')
+        .update({ note: 'failed', status: 'failed', updated_at: new Date().toISOString() })
+        .eq('id', request.id)
+        .eq('tenant_id', tenantId)
+        .eq('note', 'pending');
+      if (ledgerFailureError) {
+        console.error('[SMS Topup Confirm] Could not mark the SMS top-up failed:', ledgerFailureError);
+      }
+
+      return NextResponse.json(
+        { success: false, status: 'failed', error: 'Payment failed. No SMS credits were added.' },
+        { status: 409 }
+      );
+    }
+    if (gatewayStatus !== 'success' && gatewayStatus !== 'successful') {
       return NextResponse.json({ error: 'Payment is not yet successful' }, { status: 400 });
     }
-    
+
+    // The SMS wallet is denominated in the currency stored with the top-up.
+    // Missing or mismatched gateway currency must not be treated as UGX.
+    const expectedCurrency = typeof request.currency === 'string' && request.currency.trim()
+      ? request.currency.trim().toUpperCase()
+      : 'UGX';
+    const gatewayCurrency = typeof payment.currency === 'string'
+      ? payment.currency.trim().toUpperCase()
+      : '';
+    if (!gatewayCurrency || gatewayCurrency !== expectedCurrency) {
+      return NextResponse.json({ error: 'Payment currency mismatch' }, { status: 400 });
+    }
+
     // Validate amount from gateway matches what we expect.
     // FIN-12: compare with a small tolerance — strict !== breaks when the
     // gateway returns the amount as a string or with different precision.

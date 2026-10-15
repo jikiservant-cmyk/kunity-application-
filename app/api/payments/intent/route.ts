@@ -3,6 +3,7 @@ import { activationBlockReason } from '@/lib/activation-guard';
 import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
+import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
 // SECURITY: CORS allowlist. Never reflect an arbitrary caller-supplied Origin —
 // origin reflection lets any website execute authenticated cross-origin requests.
@@ -95,6 +96,17 @@ export async function POST(req: Request) {
     if (typeof amount !== 'number' || !Number.isFinite(numericAmount) || numericAmount <= 0) {
       return NextResponse.json({ error: 'Invalid amount: must be a positive number' }, { status: 400, headers: corsHeaders });
     }
+
+    // This ledger and the SACCO products currently operate in UGX only. Never
+    // let a caller choose a different denomination for an otherwise identical
+    // numeric balance movement.
+    const requestedCurrency = currency == null
+      ? 'UGX'
+      : (typeof currency === 'string' ? currency.trim().toUpperCase() : '');
+    if (requestedCurrency !== 'UGX') {
+      return NextResponse.json({ error: 'Unsupported currency. Payments must be in UGX.' }, { status: 400, headers: corsHeaders });
+    }
+    const finalCurrency = 'UGX';
 
     // Apply rate limiting per member or phone number
     try {
@@ -265,9 +277,8 @@ export async function POST(req: Request) {
       paymentTypeCode: paymentTypeCode || 'account_activation',
       externalEntityId: finalMemberId,
       amount: numericAmount,     // Ensure strict number type
-      currency: currency || 'UGX',
+      currency: finalCurrency,
       phoneNumber: phoneNumber,
-      reference: idempotencyKey,
       idempotencyKey: idempotencyKey,
       metadata: {
         memberId: finalMemberId,
@@ -276,8 +287,8 @@ export async function POST(req: Request) {
       }
     };
 
-    // Format URL correctly to avoid double slashes
-    const baseUrl = najikiUrl.endsWith('/') ? najikiUrl.slice(0, -1) : najikiUrl;
+    // Normalize the origin so a configured trailing slash cannot produce a //api path.
+    const baseUrl = normalizeNajikiBaseUrl(najikiUrl);
 
     // 4. Send the request to NaJiki using the secure API key
     const response = await fetch(`${baseUrl}/api/payments`, {
@@ -310,7 +321,7 @@ export async function POST(req: Request) {
     const intent = {
       id: najikiReference, // Use NaJiki reference as the ID so frontend can poll the correct endpoint
       amount: numericAmount,
-      currency: currency || 'UGX',
+      currency: finalCurrency,
       status: 'pending',
       providerInfo: data
     };
@@ -331,7 +342,7 @@ export async function POST(req: Request) {
       organization_id: finalOrganizationId,
       member_id: finalMemberId,
       amount: numericAmount,
-      currency: currency || 'UGX',
+      currency: finalCurrency,
       phone_number: phoneNumber,
       status: 'pending',
       direction: 'inbound',

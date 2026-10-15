@@ -1,11 +1,11 @@
 import { PaymentIntent, PaymentProvider } from "./types";
-import { createClient } from "@supabase/supabase-js";
+import { normalizeNajikiBaseUrl } from "../najiki-url";
 
 export class NajikiProvider implements PaymentProvider {
   name = "najiki";
 
   async createPaymentIntent(amount: number, currency: string, metadata?: any): Promise<PaymentIntent> {
-    const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
+    const apiUrl = normalizeNajikiBaseUrl(process.env.NAJIKI_API_URL || "https://najiki.netlify.app");
     const apiKey = process.env.NAJIKI_API_KEY || "";
     const applicationCode = process.env.NAJIKI_APPLICATION_CODE || "sacco";
     

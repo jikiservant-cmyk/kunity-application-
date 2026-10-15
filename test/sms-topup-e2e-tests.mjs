@@ -19,10 +19,13 @@ const NAJIKI_REF = 'NJ-TOPUP-1';
 const state = {
   balance: 0,
   ledger: [],            // wallet_transactions rows
+  paymentRequests: [],   // kunity.payment_requests rows
   najikiCalls: [],       // POST /api/payments bodies
-  najikiCreateMode: 'ok',// ok | error | pending_later
+  najikiAuthorizations: [],
+  najikiCreateMode: 'ok',// ok | error | callback_before_response | failed_callback_before_response
   najikiStatus: 'pending',// status returned by GET /api/payments/:ref
   najikiAmount: 10000,
+  najikiCurrency: 'UGX',
   ledgerInsertFail: false,
   events: [],            // ordered log: 'ledger_insert' | 'najiki_create' | 'ledger_link'
   creditCalls: 0,
@@ -44,7 +47,22 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/payments') {
     state.events.push('najiki_create');
     state.najikiCalls.push(body);
+    state.najikiAuthorizations.push(req.headers.authorization);
     if (state.najikiCreateMode === 'error') return json(502, { error: 'NaJiki is down' });
+    if (['callback_before_response', 'failed_callback_before_response'].includes(state.najikiCreateMode)) {
+      // Simulate a signed terminal webhook completing the pre-written wallet row
+      // before the NaJiki create-payment response returns to the top-up route.
+      const row = state.ledger.find((entry) => entry.type === 'sms_topup');
+      const terminalStatus = state.najikiCreateMode === 'callback_before_response' ? 'success' : 'failed';
+      if (row && row.note === 'pending') {
+        row.note = terminalStatus;
+        row.status = terminalStatus;
+        if (terminalStatus === 'success') {
+          state.balance += Number(row.amount);
+          state.creditCalls++;
+        }
+      }
+    }
     return json(200, { reference: NAJIKI_REF, status: 'pending' });
   }
   if (req.method === 'GET' && url.pathname.startsWith('/api/payments/')) {
@@ -53,7 +71,7 @@ const server = http.createServer(async (req, res) => {
     if (url.searchParams.get('tenantCode') !== 'sacco-a') {
       return json(404, { error: 'Payment not found (tenant mismatch)' });
     }
-    return json(200, { reference: decodeURIComponent(url.pathname.split('/').pop()), status: state.najikiStatus, amount: state.najikiAmount });
+    return json(200, { reference: decodeURIComponent(url.pathname.split('/').pop()), status: state.najikiStatus, amount: state.najikiAmount, currency: state.najikiCurrency });
   }
 
   // Supabase Auth
@@ -75,6 +93,14 @@ const server = http.createServer(async (req, res) => {
         state.balance += Number(body.p_amount);
       }
       return json(200, [{ id: WALLET_ID, tenant_id: TENANT, balance: state.balance, sms_rate: 50 }]);
+    }
+    if (fn === 'process_najiki_webhook') {
+      const row = state.paymentRequests.find((entry) => entry.internal_reference === body.p_reference);
+      if (!row) return json(200, { success: false, error: 'Unknown payment reference' });
+      if (row.status === 'pending') {
+        row.status = ['success', 'successful'].includes(body.p_status) ? 'success' : 'failed';
+      }
+      return json(200, { message: 'Payment failed, updated status', status: row.status });
     }
     return json(404, { message: 'unknown rpc ' + fn });
   }
@@ -110,6 +136,10 @@ const server = http.createServer(async (req, res) => {
       return json(200, wantsObject ? row : (row ? [row] : []));
     }
   }
+  if (table === 'payment_requests' && req.method === 'POST') {
+    state.paymentRequests.push({ ...body });
+    return json(201, {});
+  }
   if (table === 'audit_logs' || table === 'audit_log' || table === 'sms_messages') {
     return json(201, {});
   }
@@ -120,7 +150,7 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 process.env.NEXT_PUBLIC_SUPABASE_URL = base;
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'svc-test';
-process.env.NAJIKI_API_URL = base;
+process.env.NAJIKI_API_URL = `${base}/`;
 process.env.NAJIKI_API_KEY = 'najiki-key';
 process.env.NAJIKI_APPLICATION_CODE = 'sacco';
 
@@ -135,8 +165,8 @@ const call = async (handler, payload) => {
   return { status: res.status, body: await res.json() };
 };
 const reset = () => {
-  state.balance = 0; state.ledger = []; state.najikiCalls = []; state.events = [];
-  state.najikiCreateMode = 'ok'; state.najikiStatus = 'pending'; state.ledgerInsertFail = false; state.creditCalls = 0;
+  state.balance = 0; state.ledger = []; state.paymentRequests = []; state.najikiCalls = []; state.najikiAuthorizations = []; state.events = [];
+  state.najikiCreateMode = 'ok'; state.najikiStatus = 'pending'; state.najikiAmount = 10000; state.najikiCurrency = 'UGX'; state.ledgerInsertFail = false; state.creditCalls = 0;
 };
 
 let passed = 0;
@@ -154,14 +184,54 @@ console.log('Purchase: request payment');
     'the pending ledger row is written before NaJiki is called, then linked');
   ok('ledger row is written BEFORE the NaJiki call (no payment without a record)');
   const call0 = state.najikiCalls[0];
+  assert.equal(state.najikiAuthorizations[0], 'Bearer najiki-key');
+  assert.deepEqual(Object.keys(call0).sort(), [
+    'amount', 'applicationCode', 'currency', 'externalEntityId', 'idempotencyKey',
+    'metadata', 'paymentTypeCode', 'phoneNumber', 'tenantCode',
+  ].sort());
+  assert.equal(call0.applicationCode, 'sacco');
+  assert.equal(call0.tenantCode, 'sacco-a');
   assert.equal(call0.paymentTypeCode, 'BUY_SMS');
+  assert.equal(call0.externalEntityId, TENANT);
   assert.equal(call0.amount, 10000, 'price comes from the server pack, not the client');
+  assert.equal(call0.currency, 'UGX');
   assert.equal(call0.phoneNumber, '+256772123456');
   assert.match(call0.idempotencyKey, /^PAY-SMS-/);
-  ok('NaJiki receives BUY_SMS, the server price, the normalised momo and a local idempotency key');
+  assert.equal(call0.metadata.reference, call0.idempotencyKey, 'NaJiki must echo the pre-written local reference in callback metadata');
+  assert.equal(call0.metadata.paymentTypeCode, 'BUY_SMS');
+  ok('NaJiki receives BUY_SMS, the server price, the normalised momo and a callback-race recovery reference');
   assert.equal(state.ledger[0].reference, NAJIKI_REF);
   assert.equal(state.ledger[0].note, 'pending');
   ok('ledger row now carries NaJiki\'s reference, so the webhook and confirm can find it');
+  assert.equal(state.paymentRequests[0].status, 'pending');
+}
+{
+  reset();
+  state.najikiCreateMode = 'callback_before_response';
+  const r = await call(topup, buy);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(state.balance, 10000);
+  assert.equal(state.ledger[0].reference, NAJIKI_REF);
+  assert.equal(state.ledger[0].note, 'success');
+  assert.equal(state.paymentRequests[0].status, 'success');
+  assert.equal(r.body.intent.status, 'success');
+  assert.ok(state.paymentRequests[0].completed_at);
+  ok('a fast successful callback before the create response syncs the ledger, payment request, and response status');
+}
+{
+  reset();
+  state.najikiCreateMode = 'failed_callback_before_response';
+  const r = await call(topup, buy);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(state.balance, 0);
+  assert.equal(state.ledger[0].note, 'failed');
+  assert.equal(state.paymentRequests[0].status, 'failed');
+  assert.equal(r.body.intent.status, 'failed');
+  assert.ok(state.paymentRequests[0].completed_at);
+  const confirmation = await call(confirm, { token: ADMIN_TOKEN, intentId: NAJIKI_REF });
+  assert.equal(confirmation.status, 409);
+  assert.equal(confirmation.body.status, 'failed');
+  ok('a fast failed callback is recorded and stops the confirmation poll without crediting the wallet');
 }
 {
   reset();
@@ -217,6 +287,19 @@ console.log('Purchase: confirm and credit');
 {
   reset();
   await call(topup, buy);
+  state.najikiStatus = 'failed';
+  const failed = await call(confirm, { token: ADMIN_TOKEN, intentId: NAJIKI_REF });
+  assert.equal(failed.status, 409);
+  assert.equal(failed.body.status, 'failed');
+  assert.equal(state.ledger[0].note, 'failed');
+  assert.equal(state.ledger[0].status, 'failed');
+  assert.equal(state.paymentRequests[0].status, 'failed');
+  assert.equal(state.balance, 0);
+  ok('an authenticated NaJiki failure status stops polling and marks both local ledgers failed');
+}
+{
+  reset();
+  await call(topup, buy);
   state.najikiStatus = 'success';
   state.najikiAmount = 9000; // NaJiki charged a different amount
   const r = await call(confirm, { token: ADMIN_TOKEN, intentId: NAJIKI_REF });
@@ -224,6 +307,18 @@ console.log('Purchase: confirm and credit');
   assert.match(r.body.error, /amount mismatch/);
   assert.equal(state.balance, 0);
   ok('amount mismatch with NaJiki -> nothing credited');
+}
+{
+  reset();
+  await call(topup, buy);
+  state.najikiStatus = 'success';
+  state.najikiCurrency = 'USD';
+  const r = await call(confirm, { token: ADMIN_TOKEN, intentId: NAJIKI_REF });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /currency mismatch/i);
+  assert.equal(state.balance, 0);
+  assert.equal(state.creditCalls, 0);
+  ok('currency mismatch with NaJiki -> nothing credited');
 }
 
 server.close();

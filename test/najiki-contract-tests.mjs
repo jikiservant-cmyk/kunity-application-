@@ -1,8 +1,9 @@
 /**
  * Contract checks between Kunity and NaJiki (github.com/jikiservant-cmyk/najiki-finance2).
  *
- * The signer below is a copy of NaJiki's src/lib/notification-signature.ts (buildNotificationHeaders),
- * so a request built here is exactly what NaJiki sends. The real Kunity webhook route runs against it.
+ * The signer below mirrors NaJiki's src/lib/notification-signature.ts (buildNotificationHeaders)
+ * at provider revision 6d55d75369af05d9bd1fa529205e4d51eb213c8c. Fixtures match the current
+ * notification builders in src/lib/payments.ts and src/lib/sms-queue.ts. The real Kunity route runs against them.
  *
  * Run: node_modules/.bin/tsx test/najiki-contract-tests.mjs
  */
@@ -22,8 +23,10 @@ function najikiNotificationHeaders(secret, payloadString, now = Date.now()) {
   return headers;
 }
 
-const SECRET = 'najiki-shared-secret';
-process.env.NAJIKI_API_KEY = SECRET;           // NaJiki falls back to the application API key
+const API_KEY = 'najiki-application-api-key';
+const WEBHOOK_SECRET = 'najiki-dedicated-webhook-secret';
+process.env.NAJIKI_API_KEY = API_KEY;
+process.env.NAJIKI_WEBHOOK_SECRET = WEBHOOK_SECRET;
 process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://127.0.0.1:9';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'svc-test';
 
@@ -35,7 +38,7 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   // A SMS debit lookup returns the linked wallet debit; everything else returns an empty object.
   if (req.url.includes('/wallet_transactions')) {
-    res.end(JSON.stringify({ wallet_id: 'wallet-a', amount: 50 }));
+    res.end(JSON.stringify({ wallet_id: 'wallet-a', amount: 50, reference: 'debit-source-1' }));
   } else {
     res.end('{}');
   }
@@ -45,6 +48,8 @@ process.env.NEXT_PUBLIC_SUPABASE_URL = `http://127.0.0.1:${server.address().port
 
 const { POST } = await import('../app/api/webhooks/najiki/route.ts');
 
+// Exact bare payment-notification shape produced by NaJiki's enqueueWebhookNotification.
+// Notably, paymentTypeCode is echoed in metadata and the current schema has no fee field.
 const paymentBody = JSON.stringify({
   paymentIntentId: '7b1c1f4e-3a2b-4c5d-8e9f-0a1b2c3d4e5f',
   reference: 'SACCO-DEP-ABC123',
@@ -53,8 +58,10 @@ const paymentBody = JSON.stringify({
   currency: 'UGX',
   providerPaymentId: 'LP-1',
   failureReason: null,
-  externalEntityId: 'tenant-a',
-  metadata: { paymentTypeCode: 'BUY_SMS', organizationId: 'tenant-a' },
+  externalEntityId: 'member-123',
+  tenantId: 'tenant-a',
+  tenantCode: 'sacco-a',
+  metadata: { memberId: 'member-123', organizationId: 'tenant-a', paymentTypeCode: 'deposit' },
 });
 const smsBody = JSON.stringify({
   eventType: 'SMS_DELIVERY_UPDATE', smsId: 'cm123', reference: 'SACCO-SMS-1',
@@ -70,9 +77,20 @@ const ok = (name) => { passed++; console.log(`  ok  ${name}`); };
 
 console.log('Webhook signature (NaJiki format)');
 {
-  const res = await post(paymentBody, najikiNotificationHeaders(SECRET, paymentBody));
-  assert.notEqual(res.status, 401, 'a correctly signed NaJiki notification must pass verification');
-  ok('a NaJiki-signed payment notification passes verification');
+  const before = rpcCalls.length;
+  const res = await post(paymentBody, najikiNotificationHeaders(WEBHOOK_SECRET, paymentBody));
+  assert.equal(res.status, 200, 'a correctly signed NaJiki notification must be accepted');
+  const rpc = rpcCalls.slice(before).find((call) => call.url.includes('/rpc/process_najiki_webhook'));
+  assert.ok(rpc, 'the provider notification must reach Kunity\'s payment RPC');
+  const args = JSON.parse(rpc.body);
+  assert.equal(args.p_reference, 'SACCO-DEP-ABC123');
+  assert.equal(args.p_status, 'success');
+  assert.equal(args.p_amount, 10000);
+  assert.equal(args.p_external_entity_id, 'member-123');
+  assert.equal(args.p_payment_type, 'deposit', 'Kunity must read the type from metadata.paymentTypeCode');
+  assert.equal(args.p_fee, 0, 'NaJiki\'s current notification schema omits fee');
+  assert.deepEqual(args.p_payload, JSON.parse(paymentBody));
+  ok('the current bare NaJiki payment notification is verified and mapped into the ledger RPC');
 }
 {
   const res = await post(paymentBody, najikiNotificationHeaders('wrong-secret', paymentBody));
@@ -80,19 +98,35 @@ console.log('Webhook signature (NaJiki format)');
   ok('wrong secret -> 401');
 }
 {
+  // Current NaJiki setup stores a distinct webhook secret. The API key must not
+  // accidentally authenticate a callback while that dedicated secret is set.
+  const res = await post(paymentBody, najikiNotificationHeaders(API_KEY, paymentBody));
+  assert.equal(res.status, 401);
+  ok('API key is not accepted when a dedicated NaJiki webhook secret is configured -> 401');
+}
+{
+  // Compatibility for legacy NaJiki rows that have no encrypted webhook secret.
+  const saved = process.env.NAJIKI_WEBHOOK_SECRET;
+  delete process.env.NAJIKI_WEBHOOK_SECRET;
+  const res = await post(paymentBody, najikiNotificationHeaders(API_KEY, paymentBody));
+  process.env.NAJIKI_WEBHOOK_SECRET = saved;
+  assert.equal(res.status, 200);
+  ok('legacy NaJiki application without a separate secret falls back to its API key');
+}
+{
   const tampered = paymentBody.replace('"amount":10000', '"amount":99999');
-  const res = await post(tampered, najikiNotificationHeaders(SECRET, paymentBody));
+  const res = await post(tampered, najikiNotificationHeaders(WEBHOOK_SECRET, paymentBody));
   assert.equal(res.status, 401);
   ok('body changed after signing -> 401');
 }
 {
   const old = Date.now() - 10 * 60 * 1000;
-  const res = await post(paymentBody, najikiNotificationHeaders(SECRET, paymentBody, old));
+  const res = await post(paymentBody, najikiNotificationHeaders(WEBHOOK_SECRET, paymentBody, old));
   assert.equal(res.status, 401);
   ok('signature older than 5 minutes (replay) -> 401');
 }
 {
-  const h = najikiNotificationHeaders(SECRET, paymentBody);
+  const h = najikiNotificationHeaders(WEBHOOK_SECRET, paymentBody);
   delete h['X-Najiki-Timestamp'];
   const res = await post(paymentBody, h);
   assert.equal(res.status, 401);
@@ -100,7 +134,7 @@ console.log('Webhook signature (NaJiki format)');
 }
 {
   // The format Kunity used before: a bare HMAC of the body, no timestamp, no t=,v= prefix.
-  const bare = createHmac('sha256', SECRET).update(paymentBody).digest('hex');
+  const bare = createHmac('sha256', WEBHOOK_SECRET).update(paymentBody).digest('hex');
   const res = await post(paymentBody, { 'X-Najiki-Signature': bare });
   assert.equal(res.status, 401);
   ok('old bare-HMAC format is no longer accepted -> 401');
@@ -114,7 +148,7 @@ console.log('Webhook signature (NaJiki format)');
 console.log('SMS delivery updates on the same endpoint');
 {
   const before = rpcCalls.length;
-  const res = await post(smsBody, najikiNotificationHeaders(SECRET, smsBody));
+  const res = await post(smsBody, najikiNotificationHeaders(WEBHOOK_SECRET, smsBody));
   assert.equal(res.status, 200);
   assert.equal((await res.json()).eventType, 'SMS_DELIVERY_UPDATE');
   assert.equal(rpcCalls.slice(before).filter((c) => !c.url.includes('wallet_transactions') && !c.url.includes('refund_sms_wallet')).length, 0, 'an SMS update must not touch payment processing');
@@ -131,7 +165,7 @@ console.log('SMS delivery updates on the same endpoint');
     status: 'failed', error: 'AT rejected', recipient: '+256772123456', applicationCode: 'sacco',
   });
   const before = rpcCalls.length;
-  const res = await post(failedBody, najikiNotificationHeaders(SECRET, failedBody));
+  const res = await post(failedBody, najikiNotificationHeaders(WEBHOOK_SECRET, failedBody));
   assert.equal(res.status, 200);
   const refund = rpcCalls.slice(before).find((c) => c.url.includes('/rpc/refund_sms_wallet'));
   assert.ok(refund, 'a failed SMS must call refund_sms_wallet');
@@ -139,11 +173,12 @@ console.log('SMS delivery updates on the same endpoint');
   assert.equal(args.p_reference, 'refund_najiki_cm456');
   assert.equal(args.p_amount, 50);
   assert.equal(args.p_wallet_id, 'wallet-a');
+  assert.equal(args.p_debit_reference, 'debit-source-1');
   ok('failed SMS_DELIVERY_UPDATE refunds the linked debit once (idempotent reference)');
 }
 {
   const before = rpcCalls.length;
-  const res = await post(smsBody, najikiNotificationHeaders(SECRET, smsBody));
+  const res = await post(smsBody, najikiNotificationHeaders(WEBHOOK_SECRET, smsBody));
   assert.equal(res.status, 200);
   assert.equal(rpcCalls.slice(before).filter((c) => c.url.includes('refund_sms_wallet')).length, 0);
   ok('delivered SMS_DELIVERY_UPDATE does not refund');
@@ -160,10 +195,10 @@ console.log('Member polling and admin confirm send the tenant code NaJiki scopes
   ok('admin confirm GET references tenantCode');
 }
 
-console.log('Payment codes match NaJiki exactly (src/lib/constants.ts PLATFORM_FEE_TYPES, scripts/seed.ts)');
+console.log('Payment codes match the NaJiki provider contract (src/lib/constants.ts, scripts/seed.ts)');
 {
-  // Copied from najiki-finance2 @ 0bb3f06. NaJiki matches payment types by exact code, then
-  // classifies platform fees by code.toUpperCase().
+  // Snapshot from najiki-finance2 revision 6d55d75369af05d9bd1fa529205e4d51eb213c8c.
+  // NaJiki resolves the type row by exact application-scoped code, then classifies platform fees by upper-case code.
   const NAJIKI_PLATFORM_FEE_TYPES = ['SMS','BUY_SMS','SMS_TOPUP','ACTIVATION','ACCOUNT_ACTIVATION','SUBSCRIPTION','MONTHLY_SUBSCRIPTION','PLATFORM_FEE'];
   // The sacco application's payment types as seeded in NaJiki.
   const NAJIKI_SACCO_SEEDED_TYPES = ['deposit', 'loan_repayment', 'account_activation'];
@@ -197,7 +232,8 @@ console.log('Payment codes match NaJiki exactly (src/lib/constants.ts PLATFORM_F
   assert.equal(NAJIKI_PLATFORM_FEE_TYPES.includes('DEPOSIT'), false);
   ok('deposit and account_activation match NaJiki seeded types; activation is a platform fee, deposit is tenant collection');
   assert.equal(NAJIKI_PLATFORM_FEE_TYPES.includes('BUY_SMS'), true);
-  ok('BUY_SMS is a platform fee code in NaJiki (still needs a payment type row for sacco in NaJiki)');
+  assert.equal(NAJIKI_SACCO_SEEDED_TYPES.includes('BUY_SMS'), false);
+  ok('BUY_SMS is a platform fee code, but the current sacco seed omits its required payment-type row');
 }
 
 server.close();
