@@ -4,73 +4,60 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import ProductsSettings from './ProductsSettings';
+import AdminOverview, { type AdminConsoleTab } from './AdminOverview';
+import styles from './AdminConsole.module.css';
 import { 
   Building2, Users, CreditCard, Send, Shield, RefreshCw, LogOut, 
   ArrowUpRight, ArrowDownLeft, CheckCircle2, XCircle, AlertCircle, 
-  Search, Eye, EyeOff, TrendingUp, Sparkles, Smartphone, ChevronRight,
+  Search, TrendingUp, Sparkles, Smartphone, ChevronRight,
   Filter, Check, UserCheck, UserX, Clock, Calendar, Phone, Mail, 
   FileText, Coins, Award, HelpCircle, Layers, ArrowRight, ExternalLink,
   ChevronDown, Bell, MessageSquare, Plus, Loader2
 } from 'lucide-react';
-import { 
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
-  CartesianGrid, BarChart, Bar, PieChart as RePieChart, Pie, Cell 
-} from 'recharts';
+import type { LucideIcon } from 'lucide-react';
 
-/* ── Warm Human Design Tokens (Identical to Member Portal) ─────── */
+/* ── Admin workspace palette ──────────────────────────────────── */
 const T = {
-  cDeep:   "#7C2D12",
-  cRich:   "#B45309",
-  cMid:    "#F97316",
+  cDeep:   "#1D4ED8",
+  cRich:   "#2563EB",
+  cMid:    "#1677FF",
   gold:    "#D97706",
   goldLt:  "#FEF3C7",
-  green:   "#3D9970",
+  green:   "#12A779",
   greenLt: "#86EFAC",
   red:     "#EF4444",
   redLt:   "#FEE2E2",
-  blue:    "#4F46E5",
-  blueLt:  "#EEF2FF",
-  bg:      "#FEF6EE",
+  blue:    "#1677FF",
+  blueLt:  "#EDF4FF",
+  bg:      "#F3F5F9",
   card:    "#FFFFFF",
-  cardWarm:"#FCFAEE",
-  text:    "#1C1917",
-  sub:     "#78716C",
-  ghost:   "#A8A29E",
-  border:  "#F0E8DF",
-  borderDark: "#E7DCBF",
-  navBg:   "#7C2D12",
-  navAct:  "#F97316"
+  cardWarm:"#F8FAFD",
+  text:    "#182235",
+  sub:     "#68758A",
+  ghost:   "#98A3B5",
+  border:  "#E5EAF2",
+  borderDark: "#DCE5F2"
 };
 
 const UGX = (n: number | string) => `UGX ${Number(n || 0).toLocaleString("en-UG")}`;
 
-function Chip() {
-  return (
-    <div style={{
-      width:38, height:28, borderRadius:6,
-      background:`linear-gradient(135deg, ${T.gold} 0%, #FDE047 50%, ${T.gold} 100%)`,
-      display:"grid", gridTemplateRows:"repeat(3,1fr)",
-      padding:"5px 4px", gap:2,
-    }}>
-      {[0.3,0.15,0.3].map((o,i)=>(
-        <div key={i} style={{ background:`rgba(100,60,0,${o})`, borderRadius:1 }} />
-      ))}
-    </div>
-  );
-}
+type AdminNavigationItem = {
+  key: AdminConsoleTab;
+  label: string;
+  href: string;
+  Icon: LucideIcon;
+};
 
-function Card({ children, style={} }: any) {
-  return (
-    <div style={{
-      background: T.card, borderRadius: 22,
-      padding: "18px",
-      boxShadow: "0 4px 28px rgba(5,7,26,0.08), 0 1px 6px rgba(5,7,26,0.04)",
-      ...style,
-    }}>{children}</div>
-  );
-}
+const ADMIN_NAV_ITEMS: AdminNavigationItem[] = [
+  { key: 'overview', label: 'Overview', href: '/admin', Icon: TrendingUp },
+  { key: 'approvals', label: 'Approvals', href: '/admin/approvals', Icon: UserCheck },
+  { key: 'members', label: 'Members', href: '/admin/members', Icon: Users },
+  { key: 'loans', label: 'Loans', href: '/admin/loans', Icon: CreditCard },
+  { key: 'sms', label: 'SMS', href: '/admin/sms', Icon: Send },
+  { key: 'tenant', label: 'Settings', href: '/admin/settings', Icon: Shield },
+];
 
-export default function AdminConsole({ initialTab = 'overview' }: { initialTab?: 'overview' | 'approvals' | 'members' | 'loans' | 'sms' | 'tenant' }) {
+export default function AdminConsole({ initialTab = 'overview' }: { initialTab?: AdminConsoleTab }) {
   const router = useRouter();
 
   // State Management
@@ -78,7 +65,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [refreshing, setRefreshing] = useState(false);
   const [sessionUser, setSessionUser] = useState<any>(null);
   const [adminProfile, setAdminProfile] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'approvals' | 'members' | 'loans' | 'sms' | 'tenant'>(initialTab);
+  const [activeTab, setActiveTab] = useState<AdminConsoleTab>(initialTab);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -131,6 +118,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // UI Controls
   const [hideBalances, setHideBalances] = useState(false);
+  const [overviewSearchQuery, setOverviewSearchQuery] = useState('');
   const [searchMemberQuery, setSearchMemberQuery] = useState('');
   const [memberStatusFilter, setMemberStatusFilter] = useState<'all' | 'active' | 'pending' | 'suspended'>('all');
   const [selectedMemberModal, setSelectedMemberModal] = useState<any>(null);
@@ -152,11 +140,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Loan Underwriting Processing
   const [processingLoanId, setProcessingLoanId] = useState<string | null>(null);
-
-  // Sacco Growth Simulator State
-  const [simMonthlyGrowth, setSimMonthlyGrowth] = useState(5); // 5 new members/mo
-  const [simAvgDeposit, setSimAvgDeposit] = useState(25000); // 25k weekly per saver
-  const [simLoanDeployRate, setSimLoanDeployRate] = useState(65); // 65% capital deployed
 
   // Toast auto-clear
   useEffect(() => {
@@ -549,52 +532,38 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     return members.filter(m => m.status === 'pending' || m.status === 'pending_approval' || !m.status);
   }, [members]);
 
-  // Simulator Data Generation
-  const simulatorData = useMemo(() => {
-    const data = [];
-    let currentCapital = stats.totalLiquidity || 5000000;
-    let currentMembers = stats.totalMembers || 15;
-    for (let month = 1; month <= 12; month++) {
-      currentMembers += simMonthlyGrowth;
-      const monthlyDeposits = currentMembers * (simAvgDeposit * 4);
-      const interestEarned = currentCapital * 0.01; // 1% monthly interest on loans
-      currentCapital += monthlyDeposits * 0.35 + interestEarned;
-      data.push({
-        name: `M${month}`,
-        "Cooperative Capital": Math.round(currentCapital),
-        "Active Savers": currentMembers
-      });
-    }
-    return data;
-  }, [stats.totalLiquidity, stats.totalMembers, simMonthlyGrowth, simAvgDeposit]);
+  const adminDisplayName = adminProfile?.full_name || sessionUser?.email?.split('@')[0] || 'Admin Officer';
+  const adminInitials = adminDisplayName.split(/\s+/).slice(0, 2).map((part: string) => part[0]).join('').toUpperCase() || 'AD';
+  const activeNavItem = ADMIN_NAV_ITEMS.find((item) => item.key === activeTab) || ADMIN_NAV_ITEMS[0];
 
-  // Donut chart data for Asset Allocation
-  const assetAllocationData = useMemo(() => {
-    const liquidVault = Math.max(stats.totalLiquidity - stats.totalLoansDisbursedAmount, 100000);
-    const loansDeployed = Math.max(stats.totalLoansDisbursedAmount, 50000);
-    const saccoReserve = Math.max(stats.saccoWalletBalance, 50000);
-    return [
-      { name: 'Liquid Vault Reserve', value: liquidVault, color: T.cDeep },
-      { name: 'Active Loans Deployed', value: loansDeployed, color: T.cMid },
-      { name: 'Institutional Reserve', value: saccoReserve, color: T.gold }
-    ];
-  }, [stats]);
+  const navigateAdmin = (tab: AdminConsoleTab) => {
+    const destination = ADMIN_NAV_ITEMS.find((item) => item.key === tab);
+    if (!destination) return;
+    setActiveTab(tab);
+    if (window.location.pathname !== destination.href) router.push(destination.href);
+  };
 
-  // 6-Month Inflow vs Outflow Cashflow Chart
-  const cashflowTrendData = useMemo(() => {
-    const months = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'];
-    const baseSavings = Math.max((stats.totalLiquidity || 5000000) * 0.12, 400000);
-    const baseDisbursed = Math.max((stats.totalLoansDisbursedAmount || 2000000) * 0.15, 200000);
-    return months.map((m, idx) => {
-      const mult = 0.85 + (idx * 0.12) + (idx % 2 === 0 ? 0.08 : -0.05);
-      return {
-        month: m,
-        "Savings Deposits": Math.round(baseSavings * mult),
-        "Loan Disbursements": Math.round(baseDisbursed * mult * 0.75),
-        "Net Inflow": Math.round(baseSavings * mult - baseDisbursed * mult * 0.75)
-      };
-    });
-  }, [stats.totalLiquidity, stats.totalLoansDisbursedAmount]);
+  const renderAdminNavItem = (item: AdminNavigationItem, mobile = false) => {
+    const Icon = item.Icon;
+    const isActive = activeTab === item.key;
+    const badge = item.key === 'approvals' ? pendingMembersList.length
+      : item.key === 'loans' ? pendingLoans.length
+      : 0;
+
+    return (
+      <button
+        key={`${mobile ? 'mobile-' : ''}${item.key}`}
+        type="button"
+        className={`${mobile ? styles.mobileNavButton : styles.navButton} ${isActive ? (mobile ? styles.mobileNavButtonActive : styles.navButtonActive) : ''}`}
+        onClick={() => navigateAdmin(item.key)}
+        aria-current={isActive ? 'page' : undefined}
+      >
+        <span className={styles.navIcon}><Icon size={16} strokeWidth={1.9} /></span>
+        <span className={styles.navText}>{item.label}</span>
+        {badge > 0 && <span className={styles.navBadge}>{badge}</span>}
+      </button>
+    );
+  };
 
   if (loading) {
     return (
@@ -613,165 +582,88 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   }
 
   return (
-    <div style={{
-      maxWidth: 600,
-      margin: "0 auto",
-      height: "100vh",
-      position: 'relative',
-      background: T.bg,
-      display: "flex",
-      flexDirection: "column",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif",
-      overflow: "hidden",
-      WebkitFontSmoothing: "antialiased",
-      MozOsxFontSmoothing: "grayscale",
-    }}>
-      
-      {/* Scrollable Interior Container */}
-      <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "24px 18px 110px" }}>
-        
-        {/* Top Header Row: Greeting, Sacco Scope Switcher, & Session Controls */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <div>
-            <div style={{ fontSize: 13, color: T.sub, marginBottom: 3 }}>{greeting} 👋</div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: T.text, letterSpacing: "-0.02em" }}>
-              {adminProfile?.full_name || sessionUser?.email?.split('@')[0] || 'Admin Officer'}
-            </div>
-
-            {/* Logged-in SACCO Badge (Read-Only Security) */}
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6,
-              background: '#FFFFFF', border: `1px solid ${T.borderDark}`,
-              padding: '4px 12px', borderRadius: 99,
-              fontSize: 12, fontWeight: 700, color: T.text,
-              boxShadow: '0 2px 6px rgba(5,7,26,0.05)'
-            }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: T.green }} />
-              <span style={{ color: T.cDeep, fontWeight: 800 }}>{saccoName}</span>
-              <span style={{ color: T.ghost }}>•</span>
-              <span style={{ color: T.sub, textTransform: 'uppercase', fontSize: 10 }}>{tenantCode}</span>
-            </div>
+    <div className={styles.appShell}>
+      <aside className={styles.sidebar} aria-label="Admin workspace navigation">
+        <div className={styles.brand}>
+          <span className={styles.brandMark}><Building2 size={18} strokeWidth={2.2} /></span>
+          <span>Kunity</span>
+          <span className={styles.brandTag}>ADMIN</span>
+        </div>
+        <div className={styles.navLabel}>WORKSPACE</div>
+        <nav className={styles.nav}>
+          {ADMIN_NAV_ITEMS.map((item) => renderAdminNavItem(item))}
+        </nav>
+        <div className={styles.sidebarOrg} title={`${saccoName} · ${tenantCode}`}>
+          <span className={styles.orgMark}><Building2 size={15} /></span>
+          <div className={styles.orgText}>
+            <strong>{saccoName}</strong>
+            <small><i className={styles.statusDot} /> Active workspace</small>
           </div>
+        </div>
+      </aside>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+      <div className={styles.mainShell}>
+        <header className={styles.topbar}>
+          <div className={styles.breadcrumb}>
+            <span>Workspace</span>
+            <span aria-hidden="true">/</span>
+            <strong>{activeNavItem.label}</strong>
+          </div>
+          <div className={styles.topbarActions}>
+            {activeTab === 'overview' && (
+              <label className={styles.searchBox}>
+                <Search size={15} aria-hidden="true" />
+                <input
+                  aria-label="Search recent activity"
+                  placeholder="Search activity..."
+                  value={overviewSearchQuery}
+                  onChange={(event) => setOverviewSearchQuery(event.target.value)}
+                />
+              </label>
+            )}
+            {activeTab === 'members' && (
+              <label className={styles.searchBox}>
+                <Search size={15} aria-hidden="true" />
+                <input
+                  aria-label="Search members"
+                  placeholder="Search members..."
+                  value={searchMemberQuery}
+                  onChange={(event) => setSearchMemberQuery(event.target.value)}
+                />
+              </label>
+            )}
             <button
+              type="button"
+              className={styles.iconButton}
               onClick={() => fetchAdminData()}
               title="Refresh live tenant data"
-              style={{
-                width: 44, height: 44, borderRadius: 14,
-                background: T.card, border: `1px solid ${T.border}`, cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: "0 2px 12px rgba(5,7,26,0.08)"
-              }}
+              aria-label="Refresh dashboard data"
             >
-              <RefreshCw size={18} color={T.sub} className={refreshing ? "animate-spin text-orange-600" : ""} />
+              <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
             </button>
-
             <button
+              type="button"
+              className={`${styles.iconButton} ${styles.signOutButton}`}
               onClick={async () => {
                 await supabase.auth.signOut();
                 router.push('/auth');
               }}
-              title="Sign Out"
-              style={{
-                width: 44, height: 44, borderRadius: 14,
-                background: T.card, border: `1px solid ${T.border}`, cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: "0 2px 12px rgba(5,7,26,0.08)"
-              }}
+              title="Sign out"
+              aria-label="Sign out"
             >
-              <LogOut size={18} color={T.red} />
+              <LogOut size={16} />
             </button>
-
-            <div style={{
-              width: 44, height: 44, borderRadius: 14,
-              background: `linear-gradient(135deg, ${T.cDeep}, ${T.cMid})`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontWeight: 800, fontSize: 15, color: "white",
-              boxShadow: `0 6px 18px ${T.cDeep}40`
-            }}>
-              AD
-            </div>
+            <span className={styles.profileAvatar} title={adminDisplayName} aria-label={`Signed in as ${adminDisplayName}`}>
+              {adminInitials}
+            </span>
           </div>
-        </div>
+        </header>
 
-        {/* Premium Balance Card (Identical to Member Portal) */}
-        {activeTab === 'overview' && (
-        <div style={{
-          borderRadius: 28, padding: "26px 22px 22px", marginBottom: 24,
-          background: `linear-gradient(145deg, ${T.cDeep} 0%, ${T.cRich} 45%, ${T.cMid} 100%)`,
-          position: "relative", overflow: "hidden",
-          boxShadow: `0 24px 64px ${T.cDeep}90, 0 8px 24px ${T.cDeep}60`,
-        }}>
-          <div style={{ position: "absolute", top: -60, right: -40, width: 200, height: 200, borderRadius: "50%", background: "rgba(255,255,255,0.04)", pointerEvents: "none" }} />
-          <div style={{ position: "absolute", bottom: -60, left: -30, width: 170, height: 170, borderRadius: "50%", background: "rgba(255,255,255,0.03)", pointerEvents: "none" }} />
-          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, transparent 0%, ${T.gold} 40%, ${T.goldLt} 60%, ${T.gold} 80%, transparent 100%)`, opacity: 0.7 }} />
+        <nav className={styles.mobileNav} aria-label="Admin workspace navigation">
+          {ADMIN_NAV_ITEMS.map((item) => renderAdminNavItem(item, true))}
+        </nav>
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-            <Chip />
-            <div style={{ textAlign: "right" }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: "rgba(255,255,255,0.7)", letterSpacing: "0.08em", textTransform: 'uppercase' }}>
-                COOPERATIVE LIQUIDITY VAULT
-              </span>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.9)", marginTop: 2 }}>
-                {saccoName}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", fontWeight: 600 }}>Total Institutional Assets</span>
-              <button onClick={() => setHideBalances(!hideBalances)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.7)", padding: 0 }}>
-                {hideBalances ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-            </div>
-            <div style={{ fontSize: 28, fontWeight: 800, color: "white", letterSpacing: "-0.03em" }}>
-              {hideBalances ? '••••••••••' : UGX(stats.totalLiquidity || 4850000000)}
-            </div>
-          </div>
-
-          {/* Quick Action Badges */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <button
-              onClick={() => setActiveTab('approvals')}
-              style={{
-                background: "rgba(255,255,255,0.15)", backdropFilter: "blur(8px)",
-                border: "1px solid rgba(255,255,255,0.2)", borderRadius: 16,
-                padding: "10px 12px", color: "white", display: "flex", alignItems: "center", gap: 8,
-                cursor: "pointer", transition: "all 0.2s"
-              }}
-            >
-              <div style={{ width: 32, height: 32, borderRadius: 10, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <UserCheck size={16} color="white" />
-              </div>
-              <div style={{ textAlign: "left", overflow: "hidden" }}>
-                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>Approvals</div>
-                <div style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap" }}>{pendingMembersList.length} Pending</div>
-              </div>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('loans')}
-              style={{
-                background: "rgba(255,255,255,0.15)", backdropFilter: "blur(8px)",
-                border: "1px solid rgba(255,255,255,0.2)", borderRadius: 16,
-                padding: "10px 12px", color: "white", display: "flex", alignItems: "center", gap: 8,
-                cursor: "pointer", transition: "all 0.2s"
-              }}
-            >
-              <div style={{ width: 32, height: 32, borderRadius: 10, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <CreditCard size={16} color="white" />
-              </div>
-              <div style={{ textAlign: "left", overflow: "hidden" }}>
-                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>Underwriting</div>
-                <div style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap" }}>{pendingLoans.length} Loans</div>
-              </div>
-            </button>
-          </div>
-        </div>
-        )}
-
+        <main className={styles.pageContent}>
         {/* Toast Alert */}
         {toastMessage && (
           <div style={{
@@ -790,446 +682,21 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
             MAIN TABBED CONTENT
         ───────────────────────────────────────────────────────────── */}
 
-        {/* ───────────────────────────────────────────────────────────
-            TAB 1: OVERVIEW & COMPREHENSIVE TENANT STATISTICS
-        ─────────────────────────────────────────────────────────── */}
         {activeTab === 'overview' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            
-            {/* Immediate Member Approval Queue Spotlight */}
-            <div style={{
-                backgroundColor: T.card,
-                borderRadius: 24,
-                padding: '24px 26px',
-                border: `1px solid ${T.border}`,
-                boxShadow: '0 4px 20px rgba(44,26,17,0.02)',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between'
-              }}>
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <UserCheck size={20} color={T.cMid} />
-                      <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 17, fontWeight: 800, color: T.text, margin: 0 }}>
-                        Member Approval Queue
-                      </h3>
-                    </div>
-                    <span style={{
-                      backgroundColor: pendingMembersList.length > 0 ? 'rgba(249,115,22,0.1)' : 'rgba(61,153,112,0.1)',
-                      color: pendingMembersList.length > 0 ? T.cMid : T.green,
-                      fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 99
-                    }}>
-                      {pendingMembersList.length} Pending
-                    </span>
-                  </div>
-
-                  <p style={{ fontSize: 13, color: T.sub, marginTop: 8, lineHeight: 1.5 }}>
-                    {pendingMembersList.length > 0 
-                      ? `${pendingMembersList.length} new member${pendingMembersList.length > 1 ? 's' : ''} have not paid the activation fee yet. They become active automatically when they pay.`
-                      : "All member applications for this cooperative are verified and active."}
-                  </p>
-
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
-                  <span style={{ fontSize: 12, color: T.sub }}>Total Registered: <strong>{stats.totalMembers} members</strong></span>
-                  <button
-                    onClick={() => setActiveTab('approvals')}
-                    style={{ background: 'none', border: 'none', color: T.cMid, fontSize: 13, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
-                  >
-                    <span>View all applications</span>
-                    <ArrowRight size={15} />
-                  </button>
-                </div>
-              </div>
-
-            {/* Comprehensive Tenant Statistics Grid */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: 16
-            }}>
-              
-              {/* Metric 1: Active Savers */}
-              <div style={{ backgroundColor: T.card, borderRadius: 20, padding: 20, border: `1px solid ${T.border}`, boxShadow: '0 2px 10px rgba(44,26,17,0.02)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>Active Savers</span>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: 'rgba(61,153,112,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Users size={16} color={T.green} />
-                  </div>
-                </div>
-                <div style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, color: T.text, marginTop: 8 }}>
-                  {stats.activeMembers} / {stats.totalMembers}
-                </div>
-                <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
-                  {stats.pendingMembers} pending &bull; {stats.suspendedMembers} suspended
-                </div>
-              </div>
-
-              {/* Metric 2: Avg Savings per Member */}
-              <div style={{ backgroundColor: T.card, borderRadius: 20, padding: 20, border: `1px solid ${T.border}`, boxShadow: '0 2px 10px rgba(44,26,17,0.02)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>Avg Savings / Saver</span>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: 'rgba(217,119,6,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Coins size={16} color={T.gold} />
-                  </div>
-                </div>
-                <div style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, color: T.text, marginTop: 8 }}>
-                  {UGX(stats.avgSavingsPerMember)}
-                </div>
-                <div style={{ fontSize: 11, color: T.green, marginTop: 4, fontWeight: 600 }}>
-                  Active cooperative deposits
-                </div>
-              </div>
-
-              {/* Metric 3: Credit Requests & Pending Underwriting */}
-              <div style={{ backgroundColor: T.card, borderRadius: 20, padding: 20, border: `1px solid ${T.border}`, boxShadow: '0 2px 10px rgba(44,26,17,0.02)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>Pending Underwriting</span>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: 'rgba(249,115,22,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <CreditCard size={16} color={T.cMid} />
-                  </div>
-                </div>
-                <div style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, color: T.text, marginTop: 8 }}>
-                  {stats.pendingLoansCount} Loan{stats.pendingLoansCount !== 1 ? 's' : ''}
-                </div>
-                <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
-                  Volume: {UGX(stats.pendingLoansAmount)}
-                </div>
-              </div>
-
-              {/* Metric 4: SMS Banking Credits */}
-              <div style={{ backgroundColor: T.card, borderRadius: 20, padding: 20, border: `1px solid ${T.border}`, boxShadow: '0 2px 10px rgba(44,26,17,0.02)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>SMS Gateway Balance</span>
-                  <div style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: 'rgba(79,70,229,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Send size={16} color={T.blue} />
-                  </div>
-                </div>
-                <div style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, color: T.text, marginTop: 8 }}>
-                  {smsBalance.toLocaleString()} SMS
-                </div>
-                <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
-                  Rate: {smsRate} UGX per alert
-                </div>
-                {smsLowBalance && (
-                  <div role="alert" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 10, backgroundColor: '#FEF2F2', color: '#B91C1C', fontSize: 12, fontWeight: 700 }}>
-                    Low SMS balance. Member SMS (welcome and receipts) will fail once it runs out. Top up now.
-                  </div>
-                )}
-              </div>
-
-            </div>
-
-            {/* Visual Charts Row: Asset Allocation & 12-Month Sacco Growth Planner */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
-              gap: 24
-            }}>
-              
-              {/* Chart A: Strategic Asset Allocation */}
-              <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}`, boxShadow: '0 4px 20px rgba(44,26,17,0.02)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <div>
-                    <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: 0 }}>
-                      Strategic Capital Allocation
-                    </h3>
-                    <p style={{ fontSize: 12, color: T.sub, marginTop: 2, margin: 0 }}>Liquid Reserves vs Credit Portfolio</p>
-                  </div>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: T.cDeep, backgroundColor: '#FCFAEE', padding: '4px 10px', borderRadius: 8, border: `1px solid ${T.border}` }}>
-                    Tenant Scoped
-                  </span>
-                </div>
-
-                <div style={{ height: 210, width: '100%', position: 'relative' }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <RePieChart>
-                      <Pie
-                        data={assetAllocationData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={55}
-                        outerRadius={85}
-                        paddingAngle={4}
-                        dataKey="value"
-                      >
-                        {assetAllocationData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value) => [UGX(value as number), 'Volume']} />
-                    </RePieChart>
-                  </ResponsiveContainer>
-                </div>
-
-                {/* Legend */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-                  {assetAllocationData.map((item) => (
-                    <div key={item.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: item.color }} />
-                        <span style={{ color: T.sub, fontWeight: 600 }}>{item.name}</span>
-                      </div>
-                      <strong style={{ color: T.text }}>{UGX(item.value)}</strong>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Chart B: Sacco Growth Simulator & Planner */}
-              <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}`, boxShadow: '0 4px 20px rgba(44,26,17,0.02)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <div>
-                    <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: 0 }}>
-                      12-Month Sacco Growth Planner
-                    </h3>
-                    <p style={{ fontSize: 12, color: T.sub, marginTop: 2, margin: 0 }}>Projected capital mobilization</p>
-                  </div>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: T.green, backgroundColor: 'rgba(61,153,112,0.1)', padding: '4px 10px', borderRadius: 8 }}>
-                    Simulation Engine
-                  </span>
-                </div>
-
-                <div style={{ height: 180, width: '100%' }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={simulatorData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="capitalGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={T.cMid} stopOpacity={0.4} />
-                          <stop offset="95%" stopColor={T.cMid} stopOpacity={0.0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#F0E8DF" vertical={false} />
-                      <XAxis dataKey="name" stroke={T.ghost} fontSize={10} tickLine={false} />
-                      <YAxis stroke={T.ghost} fontSize={10} tickLine={false} tickFormatter={(v) => `${(v/1000000).toFixed(1)}M`} />
-                      <Tooltip formatter={(value) => [UGX(value as number), 'Projected Capital']} />
-                      <Area type="monotone" dataKey="Cooperative Capital" stroke={T.cMid} strokeWidth={2.5} fillOpacity={1} fill="url(#capitalGradient)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-
-                {/* Simulation Control Sliders */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: T.sub, fontWeight: 700 }}>
-                      <span>New Savers / Mo</span>
-                      <strong style={{ color: T.text }}>+{simMonthlyGrowth}</strong>
-                    </div>
-                    <input
-                      type="range" min="1" max="25" value={simMonthlyGrowth}
-                      onChange={(e) => setSimMonthlyGrowth(Number(e.target.value))}
-                      style={{ width: '100%', accentColor: T.cMid, cursor: 'pointer', marginTop: 4 }}
-                    />
-                  </div>
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: T.sub, fontWeight: 700 }}>
-                      <span>Weekly Deposit</span>
-                      <strong style={{ color: T.text }}>{UGX(simAvgDeposit)}</strong>
-                    </div>
-                    <input
-                      type="range" min="5000" max="100000" step="5000" value={simAvgDeposit}
-                      onChange={(e) => setSimAvgDeposit(Number(e.target.value))}
-                      style={{ width: '100%', accentColor: T.cMid, cursor: 'pointer', marginTop: 4 }}
-                    />
-                  </div>
-                </div>
-
-              </div>
-
-            </div>
-
-            {/* Visual Analytics Section 1: 6-Month Inflow vs Outflow Cashflow Chart */}
-            <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}`, boxShadow: '0 4px 20px rgba(44,26,17,0.02)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <div>
-                  <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: 0 }}>
-                    Cooperative Cashflow Analytics
-                  </h3>
-                  <p style={{ fontSize: 12, color: T.sub, marginTop: 2, margin: 0 }}>Monthly Member Deposits vs Disbursed Loans (UGX)</p>
-                </div>
-                <span style={{ fontSize: 11, fontWeight: 800, color: T.cMid, backgroundColor: 'rgba(249,115,22,0.1)', padding: '4px 10px', borderRadius: 8 }}>
-                  6-Month Inflow Trend
-                </span>
-              </div>
-
-              <div style={{ height: 210, width: '100%' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={cashflowTrendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0E8DF" vertical={false} />
-                    <XAxis dataKey="month" stroke={T.ghost} fontSize={11} tickLine={false} />
-                    <YAxis stroke={T.ghost} fontSize={10} tickLine={false} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
-                    <Tooltip formatter={(value) => [UGX(value as number), '']} />
-                    <Bar dataKey="Savings Deposits" fill={T.green} radius={[6, 6, 0, 0]} />
-                    <Bar dataKey="Loan Disbursements" fill={T.cMid} radius={[6, 6, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 24, marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.border}`, fontSize: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 12, height: 12, borderRadius: 4, backgroundColor: T.green }} />
-                  <span style={{ color: T.sub, fontWeight: 600 }}>Member Deposits</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 12, height: 12, borderRadius: 4, backgroundColor: T.cMid }} />
-                  <span style={{ color: T.sub, fontWeight: 600 }}>Loan Disbursements</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Visual Analytics Section 2: Portfolio Health & Solvency Matrix */}
-            <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}`, boxShadow: '0 4px 20px rgba(44,26,17,0.02)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
-                <div>
-                  <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: 0 }}>
-                    Portfolio at Risk (PAR) & Regulatory Solvency
-                  </h3>
-                  <p style={{ fontSize: 12, color: T.sub, marginTop: 2, margin: 0 }}>Institutional Health Metrics & Reserve Ratios</p>
-                </div>
-                <span style={{ fontSize: 11, fontWeight: 800, color: T.green, backgroundColor: `${T.green}15`, padding: '4px 10px', borderRadius: 8 }}>
-                  Healthy Status
-                </span>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-                
-                {/* Solvency Meter 1 */}
-                {(() => {
-                  const ldr = stats.totalLiquidity > 0 
-                    ? Math.min(Math.round((stats.totalLoansDisbursedAmount / stats.totalLiquidity) * 1000) / 10, 100) 
-                    : 0;
-                  const liq = stats.totalLiquidity > 0 
-                    ? Math.max(Math.round(((stats.totalLiquidity - stats.totalLoansDisbursedAmount) / stats.totalLiquidity) * 1000) / 10, 0) 
-                    : 100;
-                  const par = allLoans.length > 0 
-                    ? Math.round((allLoans.filter(l => l.status === 'defaulted').length / allLoans.length) * 1000) / 10 
-                    : 0;
-
-                  return (
-                    <>
-                      <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: 16, border: `1px solid ${T.border}` }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase' }}>Loan-To-Deposit (LDR)</span>
-                          <span style={{ fontSize: 11, fontWeight: 900, color: T.cMid }}>{ldr.toFixed(1)}%</span>
-                        </div>
-                        <div style={{ width: '100%', height: 8, backgroundColor: '#E7DCBF', borderRadius: 99, marginTop: 8, overflow: 'hidden' }}>
-                          <div style={{ width: `${Math.max(ldr, 2)}%`, height: '100%', backgroundColor: T.cMid, borderRadius: 99 }} />
-                        </div>
-                        <div style={{ fontSize: 10, color: T.ghost, marginTop: 6 }}>Target Range: 60.0% - 75.0%</div>
-                      </div>
-
-                      <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: 16, border: `1px solid ${T.border}` }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase' }}>Liquidity Buffer</span>
-                          <span style={{ fontSize: 11, fontWeight: 900, color: T.green }}>{liq.toFixed(1)}%</span>
-                        </div>
-                        <div style={{ width: '100%', height: 8, backgroundColor: '#E7DCBF', borderRadius: 99, marginTop: 8, overflow: 'hidden' }}>
-                          <div style={{ width: `${Math.max(liq, 2)}%`, height: '100%', backgroundColor: T.green, borderRadius: 99 }} />
-                        </div>
-                        <div style={{ fontSize: 10, color: T.ghost, marginTop: 6 }}>Regulatory Min: 15.0%</div>
-                      </div>
-
-                      <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: 16, border: `1px solid ${T.border}` }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase' }}>Portfolio at Risk (PAR-30)</span>
-                          <span style={{ fontSize: 11, fontWeight: 900, color: par > 5 ? T.red : T.green }}>{par.toFixed(1)}%</span>
-                        </div>
-                        <div style={{ width: '100%', height: 8, backgroundColor: '#E7DCBF', borderRadius: 99, marginTop: 8, overflow: 'hidden' }}>
-                          <div style={{ width: `${Math.max(par, 2)}%`, height: '100%', backgroundColor: par > 5 ? T.red : T.green, borderRadius: 99 }} />
-                        </div>
-                        <div style={{ fontSize: 10, color: T.ghost, marginTop: 6 }}>Industry Limit: 5.0%</div>
-                      </div>
-                    </>
-                  );
-                })()}
-
-              </div>
-            </div>
-            <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <div>
-                  <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: 0 }}>
-                    Active Savings Products
-                  </h3>
-                  <p style={{ fontSize: 12, color: T.sub, marginTop: 2, margin: 0 }}>Cooperative contribution tiers inside this tenant</p>
-                </div>
-                <span style={{ fontSize: 12, color: T.cMid, fontWeight: 800 }}>{savingsProducts.length} Products Active</span>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-                {savingsProducts.map((p) => (
-                  <div key={p.id} style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '16px 18px', border: `1px solid ${T.border}` }}>
-                    <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 800 }}>
-                      {p.deposit_frequency || 'weekly'} plan
-                    </span>
-                    <h4 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: '4px 0 0' }}>
-                      {p.name}
-                    </h4>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, fontSize: 11, color: T.sub }}>
-                      <span>Withdrawals: {p.allows_withdrawals ? 'Allowed' : 'Locked'}</span>
-                      <span style={{ color: T.green, fontWeight: 700 }}>Active</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Recent Tenant Journal Inflow & Outflow Audit Trail */}
-            <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <div>
-                  <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 16, fontWeight: 800, color: T.text, margin: 0 }}>
-                    Recent Cooperative Transactions
-                  </h3>
-                  <p style={{ fontSize: 12, color: T.sub, marginTop: 2, margin: 0 }}>Live journal lines recorded for {saccoName}</p>
-                </div>
-                <span style={{ fontSize: 11, color: T.ghost }}>Real-time Audit Log</span>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {recentTransactions.length > 0 ? (
-                  recentTransactions.slice(0, 8).map((txn) => (
-                    <div key={txn.id} style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      padding: '12px 14px', borderRadius: 14, backgroundColor: '#FAF9F6',
-                      border: `1px solid ${T.border}`
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{
-                          width: 36, height: 36, borderRadius: 10,
-                          backgroundColor: txn.type === 'deposit' ? 'rgba(61,153,112,0.1)' : 'rgba(249,115,22,0.1)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center'
-                        }}>
-                          {txn.type === 'deposit' ? <ArrowDownLeft size={18} color={T.green} /> : <ArrowUpRight size={18} color={T.cMid} />}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>
-                            {txn.description}
-                          </div>
-                          <div style={{ fontSize: 11, color: T.sub }}>
-                            Member: {txn.memberName} &bull; {new Date(txn.createdAt).toLocaleDateString()}
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: 14, fontWeight: 900, color: txn.type === 'deposit' ? T.green : T.cDeep }}>
-                          {txn.type === 'deposit' ? '+' : '-'}{UGX(txn.amount)}
-                        </div>
-                        <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase' }}>{txn.type}</span>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div style={{ textAlign: 'center', padding: 32, color: T.ghost, fontSize: 13 }}>
-                    No recent transactions found for this tenant scope.
-                  </div>
-                )}
-              </div>
-            </div>
-
-          </div>
+          <AdminOverview
+            saccoName={saccoName}
+            greeting={greeting}
+            stats={stats}
+            pendingMemberCount={pendingMembersList.length}
+            recentTransactions={recentTransactions}
+            savingsProductCount={savingsProducts.length}
+            smsBalance={smsBalance}
+            smsLowBalance={smsLowBalance}
+            activitySearch={overviewSearchQuery}
+            hideBalances={hideBalances}
+            onToggleBalances={() => setHideBalances((current) => !current)}
+            onNavigate={navigateAdmin}
+          />
         )}
 
         {/* ───────────────────────────────────────────────────────────
@@ -1316,7 +783,7 @@ New members become active automatically when they pay the activation fee. Declin
                             <span style={{
                               fontSize: 10, fontWeight: 800, textTransform: 'uppercase',
                               padding: '2px 8px', borderRadius: 99,
-                              backgroundColor: 'rgba(249,115,22,0.12)', color: T.cMid
+                              backgroundColor: 'rgba(22,119,255,0.12)', color: T.cMid
                             }}>
                               Pending Approval
                             </span>
@@ -1358,7 +825,7 @@ New members become active automatically when they pay the activation fee. Declin
                       display: 'grid',
                       gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
                       gap: 12,
-                      backgroundColor: '#FCFAEE',
+                      backgroundColor: T.cardWarm,
                       padding: '14px 18px',
                       borderRadius: 16,
                       border: `1px solid ${T.border}`
@@ -1474,7 +941,7 @@ New members become active automatically when they pay the activation fee. Declin
                     onChange={(e) => setSearchMemberQuery(e.target.value)}
                     style={{
                       width: '100%', padding: '10px 14px 10px 40px', borderRadius: 12,
-                      border: `1px solid ${T.border}`, backgroundColor: '#FCFAEE',
+                      border: `1px solid ${T.border}`, backgroundColor: T.cardWarm,
                       fontSize: 13, color: T.text, outline: 'none'
                     }}
                   />
@@ -1503,7 +970,7 @@ New members become active automatically when they pay the activation fee. Declin
                       const isActive = m.status === 'active';
 
                       return (
-                        <tr key={m.id} style={{ borderBottom: `1px solid ${T.border}`, backgroundColor: idx % 2 === 0 ? 'white' : '#FCFAEE' }}>
+                        <tr key={m.id} style={{ borderBottom: `1px solid ${T.border}`, backgroundColor: idx % 2 === 0 ? 'white' : T.cardWarm }}>
                           <td style={{ padding: '16px 20px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                               <div style={{
@@ -1532,7 +999,7 @@ New members become active automatically when they pay the activation fee. Declin
                             <span style={{
                               display: 'inline-flex', alignItems: 'center', gap: 5,
                               fontSize: 11, fontWeight: 800, padding: '3px 9px', borderRadius: 99,
-                              backgroundColor: isActive ? `${T.green}15` : isPending ? 'rgba(249,115,22,0.15)' : `${T.red}15`,
+                              backgroundColor: isActive ? `${T.green}15` : isPending ? 'rgba(22,119,255,0.15)' : `${T.red}15`,
                               color: isActive ? T.green : isPending ? T.cMid : T.red
                             }}>
                               <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: isActive ? T.green : isPending ? T.cMid : T.red }} />
@@ -1634,12 +1101,12 @@ New members become active automatically when they pay the activation fee. Declin
                           </h4>
                           <span style={{ fontSize: 11, color: T.sub }}>Phone: {loan.members?.phone || 'N/A'}</span>
                         </div>
-                        <span style={{ fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 6, backgroundColor: 'rgba(249,115,22,0.1)', color: T.cMid }}>
+                        <span style={{ fontSize: 10, fontWeight: 800, padding: '3px 8px', borderRadius: 6, backgroundColor: 'rgba(22,119,255,0.1)', color: T.cMid }}>
                           Pending
                         </span>
                       </div>
 
-                      <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '14px 16px', border: `1px solid ${T.border}`, marginTop: 14 }}>
+                      <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: '14px 16px', border: `1px solid ${T.border}`, marginTop: 14 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                           <span style={{ fontSize: 11, color: T.sub, textTransform: 'uppercase', fontWeight: 700 }}>Requested Principal</span>
                           <strong style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 18, color: T.cDeep, fontWeight: 900 }}>
@@ -1828,7 +1295,7 @@ New members become active automatically when they pay the activation fee. Declin
                   </h3>
                   <p style={{ fontSize: 12, color: T.sub, marginTop: 4, margin: 0 }}>Instant Mobile Money replenishment</p>
                 </div>
-                <span style={{ fontSize: 14, fontWeight: 900, color: T.cDeep, backgroundColor: '#FCFAEE', padding: '6px 12px', borderRadius: 12, border: `1px solid ${T.border}` }}>
+                <span style={{ fontSize: 14, fontWeight: 900, color: T.cDeep, backgroundColor: T.cardWarm, padding: '6px 12px', borderRadius: 12, border: `1px solid ${T.border}` }}>
                   {smsBalance.toLocaleString()} Credits
                 </span>
               </div>
@@ -1852,7 +1319,7 @@ New members become active automatically when they pay the activation fee. Declin
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <strong style={{ fontSize: 15, color: T.text }}>{pack.credits.toLocaleString()} SMS Credits</strong>
-                        <span style={{ fontSize: 10, fontWeight: 800, color: T.cMid, backgroundColor: 'rgba(249,115,22,0.1)', padding: '1px 6px', borderRadius: 6 }}>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: T.cMid, backgroundColor: 'rgba(22,119,255,0.1)', padding: '1px 6px', borderRadius: 6 }}>
                           {pack.tag}
                         </span>
                       </div>
@@ -1883,7 +1350,7 @@ New members become active automatically when they pay the activation fee. Declin
                 </span>
                 <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
                   {smsHistory.slice(0, 5).map((log) => (
-                    <div key={log.id} style={{ fontSize: 12, padding: '8px 10px', borderRadius: 10, backgroundColor: '#FCFAEE', border: `1px solid ${T.border}` }}>
+                    <div key={log.id} style={{ fontSize: 12, padding: '8px 10px', borderRadius: 10, backgroundColor: T.cardWarm, border: `1px solid ${T.border}` }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', color: T.ghost, fontSize: 10 }}>
                         <span>To: {log.recipients}</span>
                         <span>{new Date(log.date).toLocaleDateString()}</span>
@@ -1916,7 +1383,7 @@ New members become active automatically when they pay the activation fee. Declin
 
             <ProductsSettings orgId={orgId} onToast={setToastMessage} />
 
-            <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '20px 24px', border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: '20px 24px', border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
                 <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 800 }}>Member Join Link</span>
                 <p style={{ fontSize: 13, color: T.sub, margin: '4px 0 0' }}>
@@ -1944,19 +1411,19 @@ New members become active automatically when they pay the activation fee. Declin
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 18 }}>
               
-              <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
+              <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
                 <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 800 }}>Tenant Name</span>
                 <div style={{ fontSize: 16, fontWeight: 900, color: T.text, marginTop: 4 }}>{saccoName}</div>
                 <span style={{ fontSize: 11, color: T.sub, marginTop: 2 }}>Organization ID: {orgId}</span>
               </div>
 
-              <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
+              <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
                 <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 800 }}>Tenant Code</span>
                 <div style={{ fontSize: 16, fontWeight: 900, color: T.cDeep, marginTop: 4 }}>{tenantCode}</div>
                 <span style={{ fontSize: 11, color: T.sub, marginTop: 2 }}>Scoped database prefix</span>
               </div>
 
-              <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
+              <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
                 <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 800 }}>Currency Standard</span>
                 <div style={{ fontSize: 16, fontWeight: 900, color: T.text, marginTop: 4 }}>UGX (Ugandan Shillings)</div>
                 <span style={{ fontSize: 11, color: T.green, marginTop: 2 }}>Mobile money integrated</span>
@@ -2057,25 +1524,25 @@ New members become active automatically when they pay the activation fee. Declin
             <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 18 }}>
               
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                <div style={{ backgroundColor: '#FCFAEE', borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
+                <div style={{ backgroundColor: T.cardWarm, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
                   <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 700 }}>Phone</span>
                   <div style={{ fontSize: 13, fontWeight: 800, color: T.text, marginTop: 2 }}>{selectedMemberModal.phone || 'N/A'}</div>
                 </div>
-                <div style={{ backgroundColor: '#FCFAEE', borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
+                <div style={{ backgroundColor: T.cardWarm, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
                   <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 700 }}>Email</span>
                   <div style={{ fontSize: 13, fontWeight: 800, color: T.text, marginTop: 2 }}>{selectedMemberModal.email || 'N/A'}</div>
                 </div>
-                <div style={{ backgroundColor: '#FCFAEE', borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
+                <div style={{ backgroundColor: T.cardWarm, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
                   <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 700 }}>National ID (NIN)</span>
                   <div style={{ fontSize: 13, fontWeight: 800, color: T.text, marginTop: 2 }}>{selectedMemberModal.national_id || 'Not specified'}</div>
                 </div>
-                <div style={{ backgroundColor: '#FCFAEE', borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
+                <div style={{ backgroundColor: T.cardWarm, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
                   <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 700 }}>Date of Birth</span>
                   <div style={{ fontSize: 13, fontWeight: 800, color: T.text, marginTop: 2 }}>{selectedMemberModal.date_of_birth || 'N/A'}</div>
                 </div>
               </div>
 
-              <div style={{ backgroundColor: '#FCFAEE', borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
+              <div style={{ backgroundColor: T.cardWarm, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
                 <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 700 }}>Next of Kin</span>
                 <div style={{ fontSize: 13, fontWeight: 800, color: T.text, marginTop: 2 }}>
                   {selectedMemberModal.next_of_kin_name || 'None'} {selectedMemberModal.next_of_kin_phone ? `(${selectedMemberModal.next_of_kin_phone})` : ''}
@@ -2087,7 +1554,7 @@ New members become active automatically when they pay the activation fee. Declin
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
                   <span style={{
                     padding: '3px 10px', borderRadius: 99, fontSize: 11, fontWeight: 800,
-                    backgroundColor: selectedMemberModal.status === 'active' ? `${T.green}20` : 'rgba(249,115,22,0.2)',
+                    backgroundColor: selectedMemberModal.status === 'active' ? `${T.green}20` : 'rgba(22,119,255,0.2)',
                     color: selectedMemberModal.status === 'active' ? T.green : T.cMid
                   }}>
                     {selectedMemberModal.status || 'Pending'}
@@ -2164,7 +1631,7 @@ New members become active automatically when they pay the activation fee. Declin
             </div>
 
             <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: 18, border: `1px solid ${T.border}`, textAlign: 'center' }}>
+              <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: 18, border: `1px solid ${T.border}`, textAlign: 'center' }}>
                 <span style={{ fontSize: 11, color: T.sub, fontWeight: 700, textTransform: 'uppercase' }}>Selected Bundle</span>
                 <div style={{ fontSize: 30, fontWeight: 900, color: T.cDeep, marginTop: 4 }}>
                   {selectedPack.credits.toLocaleString()} SMS Credits
@@ -2220,77 +1687,8 @@ New members become active automatically when they pay the activation fee. Declin
         </div>
       )}
 
+        </main>
       </div>
-
-      {/* Floating Bottom Navigation Bar (Identical to Member Portal) */}
-      <div style={{
-        position: 'absolute', bottom: 0, left: 0, right: 0,
-        padding: "8px 16px 16px",
-        background: `linear-gradient(to top, ${T.bg} 85%, transparent)`,
-        display: "flex", justifyContent: "center",
-        zIndex: 50, pointerEvents: 'none'
-      }}>
-        <div style={{
-          pointerEvents: 'auto',
-          width: "100%", background: T.navBg, borderRadius: 26,
-          display: "flex", padding: "8px",
-          boxShadow: `0 10px 40px ${T.cDeep}80, 0 4px 12px ${T.cDeep}50`,
-          border: `1px solid rgba(255,255,255,0.08)`,
-        }}>
-          {[
-            { key: "overview",  label: "Overview",  Icon: TrendingUp, route: "/admin" },
-            { key: "approvals", label: "Approvals", Icon: UserCheck, badge: pendingMembersList.length, route: "/admin/approvals" },
-            { key: "members",   label: "Members",   Icon: Users, badge: members.length, route: "/admin/members" },
-            { key: "loans",     label: "Loans",     Icon: CreditCard, badge: pendingLoans.length, route: "/admin/loans" },
-            { key: "sms",       label: "SMS",       Icon: Send, route: "/admin/sms" },
-            { key: "tenant",    label: "Settings",  Icon: Shield, route: "/admin/settings" },
-          ].map(({ key, label, Icon, badge, route }) => {
-            const on = activeTab === key;
-            return (
-              <button key={key} onClick={() => {
-                setActiveTab(key as any);
-                window.history.pushState(null, '', route);
-              }} style={{
-                flex: 1, background: "none", border: "none", cursor: "pointer",
-                display: "flex", flexDirection: "column", alignItems: "center",
-                gap: 4, padding: "8px 0", position: "relative"
-              }}>
-                <div style={{
-                  width: on ? 50 : 34, height: 36, borderRadius: on ? 14 : "50%",
-                  background: on ? T.navAct : "transparent",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  transition: "all 0.25s cubic-bezier(0.4,0,0.2,1)",
-                  boxShadow: on ? `0 6px 18px ${T.navAct}70` : "none",
-                  position: 'relative'
-                }}>
-                  <Icon size={20} color={on ? "white" : "rgba(255,255,255,0.35)"} />
-                  {badge !== undefined && badge > 0 && (
-                    <span style={{
-                      position: 'absolute', top: -3, right: -4,
-                      backgroundColor: '#EF4444', color: 'white',
-                      fontSize: 9, fontWeight: 900, borderRadius: 99,
-                      padding: '1px 5px', minWidth: 16, height: 16,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      border: '1.5px solid #7C2D12'
-                    }}>
-                      {badge}
-                    </span>
-                  )}
-                </div>
-                <span style={{
-                  fontSize: 10, fontWeight: on ? 700 : 400,
-                  color: on ? "white" : "rgba(255,255,255,0.35)",
-                  transition: "all 0.2s ease",
-                  whiteSpace: 'nowrap'
-                }}>
-                  {label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
     </div>
   );
 }

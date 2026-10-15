@@ -46,9 +46,10 @@ cp .env.example .env.local
 | `LIVEPAY_API_KEY` | LivePay payment gateway public API key |
 | `LIVEPAY_SECRET_KEY` | LivePay HMAC webhook signing secret (required for webhook validation) |
 | `LIVEPAY_ACCOUNT_NUMBER` | LivePay merchant / collector account number |
-| `NAJIKI_API_URL` | NaJiki API gateway URL (e.g. `https://najiki.vercel.app`) |
-| `NAJIKI_API_KEY` | NaJiki webhook and dispatch API key |
-| `NAJIKI_APPLICATION_CODE` | Application identifier (e.g. `KUNITY`) |
+| `NAJIKI_API_URL` | Root URL of the deployed NaJiki API (no `/api` suffix) |
+| `NAJIKI_API_KEY` | Bearer API key for NaJiki payment/status and SMS dispatch requests |
+| `NAJIKI_APPLICATION_CODE` | Exact registered application code; the current NaJiki seed uses `sacco` |
+| `NAJIKI_WEBHOOK_SECRET` | Dedicated webhook secret returned once by current NaJiki setup/rotation; required for matching signed callbacks. Only legacy NaJiki application rows without a separate secret use the API-key fallback. |
 
 #### Optional / Recommended Integrations
 
@@ -59,6 +60,8 @@ cp .env.example .env.local
 | `INNGEST_EVENT_KEY` | Inngest event key for reliable asynchronous background jobs (SMS dispatch, reconciliations) |
 | `INNGEST_SIGNING_KEY` | Inngest webhook signing key |
 | `ALLOW_INSECURE_WEBHOOKS` | Set to `"false"` in production. Set to `"true"` only for isolated local testing without HMAC signatures. |
+
+For the exact NaJiki API/webhook contract, callback URL configuration, dedicated signing secret, `BUY_SMS` payment-type requirement, and staging checklist, see [`docs/integrations/najiki-webhooks.md`](docs/integrations/najiki-webhooks.md).
 
 ### 3. Run Development Server
 
@@ -72,7 +75,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## Security Best Practices
 
-1. **Never expose `SUPABASE_SERVICE_ROLE_KEY` or `LIVEPAY_SECRET_KEY` on the client.** All financial actions and webhook handlers run strictly server-side in `app/api/*`.
+1. **Never expose provider or database secrets on the client.** This includes `SUPABASE_SERVICE_ROLE_KEY`, `NAJIKI_API_KEY`, `NAJIKI_WEBHOOK_SECRET`, and any legacy LivePay secret. Financial actions and webhook handlers run server-side in `app/api/*`.
 2. **Strict RBAC**: Admin actions require roles in `sacco_admin`, `super_admin`, `system_admin`, or `admin`.
 3. **Cross-Tenant Guard**: Admins cannot approve loans or members outside their assigned tenant unless possessing global `super_admin` privileges.
 4. **Idempotency & Replay Protection**: Loan disbursements check for `pending` status and perform atomic check-and-set updates before crediting balances.

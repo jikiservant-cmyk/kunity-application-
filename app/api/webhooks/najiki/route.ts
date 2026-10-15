@@ -10,21 +10,34 @@ function getSupabaseAdmin() {
   );
 }
 
-// Verify a NaJiki notification. Matches NaJiki's signer (src/lib/notification-signature.ts):
+// Verify a NaJiki notification. Matches NaJiki's signer
+// (najiki-finance2/src/lib/notification-signature.ts):
 //   X-Najiki-Timestamp: <unix ms>
 //   X-Najiki-Signature: t=<unix ms>,v=<hex HMAC-SHA256 of "<t>.<raw body>">
-// The secret is the application's webhook secret. NaJiki falls back to the application API key
-// when no separate webhook secret is set, so NAJIKI_WEBHOOK_SECRET defaults to NAJIKI_API_KEY.
+// Current NaJiki setup/seed creates a dedicated application webhook secret, so
+// production must set NAJIKI_WEBHOOK_SECRET to that exact one-time value. The
+// API-key fallback is retained only for legacy NaJiki application rows that do
+// not have webhookSecretEncrypted configured.
 // The timestamp is inside the signed string and must be within 5 minutes, so a captured body
 // cannot be replayed later.
 const NAJIKI_MAX_SKEW_MS = 5 * 60 * 1000;
+let warnedAboutLegacySecretFallback = false;
 
 function verifyWebhookSignature(
   rawBody: string,
   signatureHeader: string | null,
   timestampHeader: string | null
 ): boolean {
-  const secret = process.env.NAJIKI_WEBHOOK_SECRET || process.env.NAJIKI_API_KEY;
+  const dedicatedSecret = process.env.NAJIKI_WEBHOOK_SECRET?.trim();
+  const secret = dedicatedSecret || process.env.NAJIKI_API_KEY?.trim();
+
+  if (!dedicatedSecret && process.env.NODE_ENV === 'production' && !warnedAboutLegacySecretFallback) {
+    warnedAboutLegacySecretFallback = true;
+    console.error(
+      '[Najiki Webhook] NAJIKI_WEBHOOK_SECRET is not configured. The API-key fallback only works ' +
+      'for legacy NaJiki application rows without a dedicated webhook secret.'
+    );
+  }
 
   // Security Guard: fail closed
   if (!secret || secret === 'your-najiki-webhook-secret-here') {
@@ -60,7 +73,7 @@ async function refundFailedSms(
   const { data: debit, error } = await supabaseAdmin
     .schema('public')
     .from('wallet_transactions')
-    .select('wallet_id, amount')
+    .select('wallet_id, amount, reference')
     .eq('description', `najiki_sms:${smsId}`)
     .eq('direction', 'debit')
     .maybeSingle();
@@ -74,6 +87,7 @@ async function refundFailedSms(
     p_wallet_id: debit.wallet_id,
     p_amount: Number(debit.amount),
     p_reference: `refund_najiki_${smsId}`,
+    p_debit_reference: debit.reference,
   });
   if (refundErr) {
     console.error('[Najiki Webhook] Refund RPC failed:', refundErr);
@@ -137,6 +151,8 @@ export async function POST(req: Request) {
     } = payloadData;
 
     const finalPaymentType = paymentType || payloadData.paymentTypeCode || metadata?.paymentTypeCode;
+    const isSuccessfulPaymentStatus = status === 'success' || status === 'successful';
+    const isFailedPaymentStatus = ['failed', 'failure', 'cancelled', 'canceled', 'expired', 'rejected'].includes(status);
 
     if (!reference && !externalEntityId) {
       console.error('[Najiki Webhook] Missing reference or externalEntityId');
@@ -147,58 +163,202 @@ export async function POST(req: Request) {
 
     const supabaseAdmin = getSupabaseAdmin();
 
-    if (finalPaymentType === 'BUY_SMS' && (status === 'success' || status === 'successful')) {
-      console.log(`[Najiki Webhook] Handling SMS Topup manually for reference=${reference}`);
-      
-      
-      // Fix: prevent filter injection by checking id and reference in two separate parameterized queries
+    if (finalPaymentType === 'BUY_SMS' && (isSuccessfulPaymentStatus || isFailedPaymentStatus)) {
+      const terminalLedgerStatus = isSuccessfulPaymentStatus ? 'success' : 'failed';
+      console.log(`[Najiki Webhook] Handling SMS Topup ${terminalLedgerStatus} for reference=${reference}`);
+      if (!reference) {
+        return NextResponse.json({ error: 'Missing SMS top-up reference' }, { status: 400 });
+      }
+
+      // Resolve the ledger transaction by exact, parameterized id/reference lookup.
+      // During a very fast callback, the NaJiki reference may arrive before the
+      // create-payment response has linked our pre-written row. NaJiki echoes
+      // metadata.reference, which is the local idempotency reference we wrote first.
+      const lookupReferences = [...new Set([
+        typeof reference === 'string' ? reference.trim() : '',
+        typeof metadata?.reference === 'string' ? metadata.reference.trim() : '',
+      ].filter(Boolean))];
       let request = null;
-      // Try by UUID id if reference looks like a UUID
-      if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(reference)) {
-        const { data } = await supabaseAdmin
-          .schema('public')
-          .from('wallet_transactions')
-          .select('*')
-          .eq('id', reference)
-          .maybeSingle();
-        request = data;
+      let lookupError = null;
+      for (const lookupReference of lookupReferences) {
+        if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(lookupReference)) {
+          const { data, error } = await supabaseAdmin
+            .schema('public')
+            .from('wallet_transactions')
+            .select('*')
+            .eq('id', lookupReference)
+            .maybeSingle();
+          request = data;
+          lookupError = error;
+        }
+        if (!request && !lookupError) {
+          const { data, error } = await supabaseAdmin
+            .schema('public')
+            .from('wallet_transactions')
+            .select('*')
+            .eq('reference', lookupReference)
+            .maybeSingle();
+          request = data;
+          lookupError = error;
+        }
+        if (request || lookupError) break;
+      }
+      if (lookupError) {
+        console.error('[Najiki Webhook] SMS top-up lookup failed:', lookupError);
+        return NextResponse.json({ error: 'Could not verify SMS top-up' }, { status: 500 });
       }
       if (!request) {
-        const { data } = await supabaseAdmin
-          .schema('public')
-          .from('wallet_transactions')
-          .select('*')
-          .eq('reference', reference)
-          .maybeSingle();
-        request = data;
+        // NaJiki treats most 4xx responses as permanent. 503 is deliberate:
+        // this can be the create-response/link race, so ask it to retry rather
+        // than permanently dropping a paid top-up.
+        return NextResponse.json({ error: 'SMS top-up transaction not found yet' }, { status: 503 });
+      }
+      if (request.type !== 'sms_topup' || request.direction !== 'credit') {
+        return NextResponse.json({ error: 'Transaction is not a pending SMS top-up' }, { status: 409 });
+      }
+      if (!request.tenant_id || String(request.tenant_id) !== String(externalEntityId || '')) {
+        console.error(`[Najiki Webhook] SMS top-up tenant mismatch for reference=${reference}`);
+        return NextResponse.json({ error: 'SMS top-up tenant mismatch' }, { status: 409 });
       }
 
+      const incomingAmount = Number(amount);
+      const storedAmount = Number(request.amount);
+      if (!Number.isFinite(incomingAmount) || incomingAmount <= 0
+          || !Number.isFinite(storedAmount) || storedAmount <= 0
+          || Math.abs(incomingAmount - storedAmount) > 0.01) {
+        console.error(`[Najiki Webhook] Invalid or mismatched SMS top-up amount: incoming ${amount} != stored ${request.amount}`);
+        return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
+      }
 
-      if (request && request.note !== 'success' && request.status !== 'success') {
-        // Cross-check incoming amount with stored transaction amount
-        if (Math.abs(Number(amount) - Number(request.amount)) > 0.01) {
-          console.error(`[Najiki Webhook] Amount mismatch: incoming ${amount} != stored ${request.amount}`);
-          return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
+      const incomingCurrency = typeof payloadData.currency === 'string'
+        ? payloadData.currency.trim().toUpperCase()
+        : '';
+      const storedCurrency = typeof request.currency === 'string' && request.currency.trim()
+        ? request.currency.trim().toUpperCase()
+        : 'UGX';
+      if (!incomingCurrency || incomingCurrency !== storedCurrency) {
+        console.error(`[Najiki Webhook] Invalid or mismatched SMS top-up currency: incoming ${incomingCurrency || '(missing)'} != stored ${storedCurrency}`);
+        return NextResponse.json({ error: 'Currency mismatch' }, { status: 409 });
+      }
+
+      const alreadyCredited = request.note === 'success' || request.status === 'success';
+      const alreadyFailed = request.note === 'failed' || request.status === 'failed';
+      const ledgerIsPending = (!request.note || request.note === 'pending')
+        && (!request.status || request.status === 'pending');
+      if (isSuccessfulPaymentStatus && alreadyFailed) {
+        return NextResponse.json({ error: 'SMS top-up was already marked failed' }, { status: 409 });
+      }
+      if (isFailedPaymentStatus && alreadyCredited) {
+        return NextResponse.json({ error: 'SMS top-up was already credited' }, { status: 409 });
+      }
+      if (!alreadyCredited && !alreadyFailed && !ledgerIsPending) {
+        return NextResponse.json({ error: 'SMS top-up transaction is not pending' }, { status: 409 });
+      }
+
+      // Keep Kunity's payment_requests record in sync with terminal provider
+      // callbacks. The SQL payment RPC records BUY_SMS status without posting a
+      // SACCO journal; only its success path below credits the separate SMS wallet.
+      const { data: paymentResult, error: paymentRpcError } = await supabaseAdmin
+        .schema('kunity')
+        .rpc('process_najiki_webhook', {
+          p_reference: reference,
+          p_status: status,
+          p_amount: incomingAmount,
+          p_fee: fee,
+          p_external_entity_id: externalEntityId,
+          p_payment_type: finalPaymentType,
+          p_payload: body,
+        });
+      if (paymentRpcError) {
+        console.error('[Najiki Webhook] Could not record SMS payment status:', paymentRpcError);
+        return NextResponse.json({ error: 'Could not record SMS payment status' }, { status: 500 });
+      }
+      if (paymentResult?.success === false && paymentResult.error !== 'Unknown payment reference') {
+        console.error('[Najiki Webhook] SMS payment rejected by payment ledger:', paymentResult);
+        return NextResponse.json({ error: paymentResult.error || 'SMS payment rejected' }, { status: 409 });
+      }
+      if (paymentResult?.error === 'Unknown payment reference') {
+        // The wallet top-up row is the authoritative credit record. The companion
+        // payment_requests row is best-effort and is written after the provider
+        // returns its reference, so it can legitimately be absent during a race.
+        console.warn(`[Najiki Webhook] No payment_requests row yet for SMS reference=${reference}; wallet ledger remains authoritative`);
+      }
+      const paymentRequestStatus = String(paymentResult?.status || '').toLowerCase();
+      if (isSuccessfulPaymentStatus && paymentRequestStatus === 'failed') {
+        return NextResponse.json({ error: 'SMS payment was already marked failed' }, { status: 409 });
+      }
+      if (isFailedPaymentStatus && paymentRequestStatus === 'success') {
+        return NextResponse.json({ error: 'SMS payment was already marked successful' }, { status: 409 });
+      }
+
+      if (isFailedPaymentStatus) {
+        if (alreadyFailed) {
+          console.log(`[Najiki Webhook] SMS Topup failure already recorded for reference=${reference}`);
+          return NextResponse.json({ success: true, message: 'Already processed' });
         }
 
-        const { error: creditErr } = await supabaseAdmin
-          .rpc('credit_sms_wallet_idempotent', {
-              p_wallet_id: request.wallet_id,
-              p_transaction_id: request.id,
-              p_amount: Number(request.amount)
-          });
+        // Record the provider's terminal failure without changing the wallet balance.
+        // Match the values we read so a concurrent success callback/credit cannot
+        // be overwritten by this failure.
+        let failedUpdate = supabaseAdmin
+          .schema('public')
+          .from('wallet_transactions')
+          .update({ note: 'failed', status: 'failed', updated_at: new Date().toISOString() })
+          .eq('id', request.id);
+        failedUpdate = request.note == null
+          ? failedUpdate.is('note', null)
+          : failedUpdate.eq('note', request.note);
+        failedUpdate = request.status == null
+          ? failedUpdate.is('status', null)
+          : failedUpdate.eq('status', request.status);
 
-        if (!creditErr) {
-          console.log(`[Najiki Webhook] Successfully credited SMS wallet for reference=${reference}`);
-          return NextResponse.json({ success: true, message: 'SMS Topup credited' });
-        } else {
-           console.error('[Najiki Webhook] Error crediting wallet balance:', creditErr);
-           return NextResponse.json({ error: 'Failed to credit wallet' }, { status: 500 });
+        const { data: failedRow, error: failedUpdateError } = await failedUpdate
+          .select('id')
+          .maybeSingle();
+        if (failedUpdateError) {
+          console.error('[Najiki Webhook] Could not mark SMS top-up failed:', failedUpdateError);
+          return NextResponse.json({ error: 'Could not record SMS top-up failure' }, { status: 500 });
         }
-      } else if (request && (request.note === 'success' || request.status === 'success')) {
+        if (!failedRow) {
+          const { data: latestRow, error: latestReadError } = await supabaseAdmin
+            .schema('public')
+            .from('wallet_transactions')
+            .select('note, status')
+            .eq('id', request.id)
+            .maybeSingle();
+          if (latestReadError) {
+            console.error('[Najiki Webhook] Could not verify SMS top-up failure state:', latestReadError);
+            return NextResponse.json({ error: 'Could not verify SMS top-up failure state' }, { status: 500 });
+          }
+          if (latestRow?.note === 'success' || latestRow?.status === 'success') {
+            return NextResponse.json({ error: 'SMS top-up was already credited' }, { status: 409 });
+          }
+          if (latestRow?.note !== 'failed' && latestRow?.status !== 'failed') {
+            return NextResponse.json({ error: 'Could not record SMS top-up failure' }, { status: 500 });
+          }
+        }
+
+        console.log(`[Najiki Webhook] SMS Topup marked failed for reference=${reference}`);
+        return NextResponse.json({ success: true, message: 'SMS top-up marked failed' });
+      }
+
+      if (alreadyCredited) {
         console.log(`[Najiki Webhook] SMS Topup already processed for reference=${reference}`);
         return NextResponse.json({ success: true, message: 'Already processed' });
       }
+
+      const { error: creditErr } = await supabaseAdmin.rpc('credit_sms_wallet_idempotent', {
+        p_wallet_id: request.wallet_id,
+        p_transaction_id: request.id,
+        p_amount: storedAmount,
+      });
+
+      if (creditErr) {
+        console.error('[Najiki Webhook] Error crediting wallet balance:', creditErr);
+        return NextResponse.json({ error: 'Failed to credit wallet' }, { status: 500 });
+      }
+      console.log(`[Najiki Webhook] Successfully credited SMS wallet for reference=${reference}`);
+      return NextResponse.json({ success: true, message: 'SMS Topup credited' });
     }
 
     
@@ -220,13 +380,14 @@ export async function POST(req: Request) {
 
     console.log('[Najiki Webhook] Success:', result);
 
-    // FIN-38: the ledger REJECTED this event (amount/currency mismatch, unknown
-    // reference, held payment type). Do not acknowledge with 200: the gateway
-    // would stop retrying and nothing would alert anyone. A non-2xx keeps the
-    // event in the gateway's retry/alert queue until ops resolve it.
+    // Current NaJiki treats 4xx responses (except 408/429) as permanent and
+    // will not retry them. A missing reference can be a create-response race,
+    // so return a retryable 503 for that case. Signed amount/currency/type
+    // mismatches are permanent business rejections and remain 409.
     if (result && result.success === false) {
       console.error('[Najiki Webhook] Rejected by ledger:', result);
-      return NextResponse.json({ error: result.error || 'Rejected', data: result }, { status: 409 });
+      const statusCode = result.error === 'Unknown payment reference' ? 503 : 409;
+      return NextResponse.json({ error: result.error || 'Rejected', data: result }, { status: statusCode });
     }
 
     // 3. If newly processed successful deposit, send an automated SMS notification

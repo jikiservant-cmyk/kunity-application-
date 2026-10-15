@@ -178,9 +178,28 @@ export async function POST(req: NextRequest) {
     }
 
     // Record the NaJiki payment in payment_requests, the same way /api/payments/intent does, so the
-    // top-up is visible with the other payments. The wallet credit does NOT depend on this row:
-    // the webhook and confirm route credit from wallet_transactions, and the ledger RPC records
-    // BUY_SMS without posting journal entries. So a failure here is logged, not fatal.
+    // top-up is visible with the other payments. A fast provider callback can arrive before this
+    // POST receives NaJiki's response; the webhook can already have marked the pre-written wallet
+    // row successful or failed via metadata.reference. Reflect that terminal state instead of
+    // inserting a stale pending payment request. The wallet credit itself never depends on this row.
+    const { data: linkedTopup, error: linkedTopupReadError } = await supabaseAdmin
+      .schema('public')
+      .from('wallet_transactions')
+      .select('note, status')
+      .eq('reference', najikiRef)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (linkedTopupReadError) {
+      console.error('[SMS Topup API] Could not read linked top-up status:', linkedTopupReadError, { najikiRef });
+    }
+    const callbackState = linkedTopup?.note === 'success' || linkedTopup?.status === 'success'
+      ? 'success'
+      : linkedTopup?.note === 'failed' || linkedTopup?.status === 'failed'
+        ? 'failed'
+        : 'pending';
+
+    // The ledger RPC records BUY_SMS without posting journal entries.
+    // Failure to write this reporting row remains non-fatal to wallet credit.
     const { error: prErr } = await supabaseAdmin.schema('kunity').from('payment_requests').insert({
       id: crypto.randomUUID(),
       organization_id: tenantId,
@@ -188,7 +207,8 @@ export async function POST(req: NextRequest) {
       amount: amount,
       currency: 'UGX',
       phone_number: momo,
-      status: 'pending',
+      status: callbackState,
+      ...(callbackState !== 'pending' ? { completed_at: new Date().toISOString() } : {}),
       direction: 'inbound',
       idempotency_key: localRef,
       internal_reference: najikiRef,
@@ -209,9 +229,11 @@ export async function POST(req: NextRequest) {
       newData: { amount, credits: pack.credits, momoNumber: momo }
     });
 
+    const responseIntent = callbackState === 'pending' ? intent : { ...intent, status: callbackState };
+
     return NextResponse.json({
       success: true,
-      intent,
+      intent: responseIntent,
       intentId: najikiRef
     });
 

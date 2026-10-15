@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { interpolateTemplate } from './sms-templates';
 import { normalizeUgandanPhone } from './validators';
 import { smsSegments } from './sms-segments';
+import { normalizeNajikiBaseUrl } from './najiki-url';
 
 export interface SmsResult {
   success: boolean;
@@ -242,12 +243,13 @@ export async function sendSms({
         console.error('[SMS Service] Dispatch aborted. NaJiki Gateway configuration missing.');
         return { success: false, error: 'SMS Gateway configuration missing' };
     }
+    const najikiBase = normalizeNajikiBaseUrl(najikiUrl);
 
     const maskedPhone = `${cleanPhone.slice(0, 4)}***${cleanPhone.slice(-2)}`;
-    console.log(`[SMS Service] Dispatching payload to NaJiki at ${najikiUrl}/api/messaging/send for phone ${maskedPhone}`);
+    console.log(`[SMS Service] Dispatching payload to NaJiki at ${najikiBase}/api/messaging/send for phone ${maskedPhone}`);
 
     try {
-      const response = await fetch(`${najikiUrl}/api/messaging/send`, {
+      const response = await fetch(`${najikiBase}/api/messaging/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -338,7 +340,8 @@ export async function sendSms({
           .rpc('refund_sms_wallet', {
             p_wallet_id: wallet.id,
             p_amount: totalCost,
-            p_reference: refundReference
+            p_reference: refundReference,
+            p_debit_reference: resolvedIdempotencyKey
           })
           .single();
 
