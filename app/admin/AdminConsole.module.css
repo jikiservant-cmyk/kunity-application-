@@ -799,15 +799,17 @@
   }
 
   .mobileNav {
-    position: sticky;
-    z-index: 15;
-    top: 52px;
+    position: fixed;
+    z-index: 40;
+    inset: auto 0 0;
     display: flex;
     gap: 4px;
     overflow-x: auto;
-    padding: 7px 10px;
-    background: #fff;
-    border-bottom: 1px solid var(--admin-line);
+    padding: 8px max(10px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    background: rgba(255, 255, 255, 0.97);
+    border-top: 1px solid var(--admin-line);
+    box-shadow: 0 -8px 24px rgba(24, 34, 53, 0.08);
+    backdrop-filter: blur(14px);
     scrollbar-width: none;
   }
 
@@ -825,7 +827,7 @@
   }
 
   .pageContent {
-    padding: 16px 12px 24px;
+    padding: 16px 12px calc(88px + env(safe-area-inset-bottom));
   }
 
   .welcome {
