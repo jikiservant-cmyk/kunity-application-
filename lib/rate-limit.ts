@@ -113,6 +113,15 @@ export const smsSendLimiter = {
   }
 };
 
+// 8. Registration Limiter (per client IP, creating NEW member profiles)
+const _registrationLimiter = createLimiter('register', 5, 3600);
+export const registrationLimiter = {
+  check: async (limit: number, key: string) => {
+    const { success } = await _registrationLimiter.limit(key, limit);
+    if (!success) throw new Error('Too many registration attempts from this network. Please try again later.');
+  }
+};
+
 // 7. Messaging Limiter
 const _messagingLimiter = createLimiter('messaging', 30, 60);
 export const messagingLimiter = {

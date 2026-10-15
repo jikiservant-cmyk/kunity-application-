@@ -3,6 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
+import { packForPrice } from '@/lib/sms-packs';
 
 export async function POST(req: NextRequest) {
   try {
@@ -17,10 +18,14 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, intentId, momoNumber, credits } = body;
+    const { token, intentId, momoNumber } = body;
 
     if (!token || !intentId) {
       return NextResponse.json({ error: 'Missing token or intentId' }, { status: 400 });
+    }
+    // SECURITY: intentId is interpolated into a NaJiki URL below, so it must be a plain id.
+    if (typeof intentId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(intentId)) {
+      return NextResponse.json({ error: 'Invalid intentId' }, { status: 400 });
     }
 
     // 1. Verify caller is a genuine administrator (token + role from admin_profiles)
@@ -37,8 +42,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Rate limit exceeded for topup confirmation' }, { status: 429 });
     }
 
-    const tenantId = adminAuth.tenantId;
-    if (!tenantId) {
+    const adminTenantId = adminAuth.tenantId;
+    if (!adminTenantId) {
       return NextResponse.json({ error: 'Unauthorized: Admin is not associated with any tenant' }, { status: 403 });
     }
 
@@ -72,9 +77,19 @@ export async function POST(req: NextRequest) {
     
     // Ensure the payment request actually belongs to this admin's tenant.
     // Global admins (super_admin/system_admin) may confirm for any tenant.
-    if (request.tenant_id !== tenantId && !adminAuth.isGlobalAdmin) {
+    if (request.tenant_id !== adminTenantId && !adminAuth.isGlobalAdmin) {
       return NextResponse.json({ error: 'Unauthorized: Payment request does not belong to this tenant' }, { status: 403 });
     }
+
+    // SECURITY: only SMS top-up credit rows may be confirmed. Any other wallet row with a
+    // successful gateway reference must not credit the SMS wallet.
+    if (request.type !== 'sms_topup' || request.direction !== 'credit') {
+      return NextResponse.json({ error: 'Not an SMS top-up payment request' }, { status: 400 });
+    }
+
+    // SECURITY: the wallet credited is the one that owns the payment, not the admin's own
+    // tenant. A global admin confirming another SACCO's top-up must not credit their own wallet.
+    const tenantId: string = request.tenant_id;
 
     if (request.note === 'success' || request.description === 'success' || request.status === 'success') {
        const { data: w } = await supabaseAdmin.schema('public').from('wallets').select('balance, sms_rate').eq('tenant_id', tenantId).single();
@@ -89,7 +104,19 @@ export async function POST(req: NextRequest) {
     // Double check status with Najiki
     const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
     const apiKey = process.env.NAJIKI_API_KEY || "";
-    const najikiRes = await fetch(`${apiUrl}/api/payments/${intentId}`, {
+    // NaJiki (GET /api/payments/[reference]) returns 404 for a tenant-scoped payment unless the
+    // request names the same tenant code. Without this, every confirmation failed.
+    const { data: tenantRow } = await supabaseAdmin
+      .schema('public')
+      .from('tenants')
+      .select('code')
+      .eq('id', tenantId)
+      .maybeSingle();
+    // Same rule as when the payment was created (admin topup route): the tenant code, else the tenant id.
+    const najikiTenantCode: string = tenantRow?.code || tenantId;
+    const najikiRes = await fetch(
+      `${apiUrl}/api/payments/${encodeURIComponent(intentId)}?tenantCode=${encodeURIComponent(najikiTenantCode)}`,
+      {
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
@@ -130,6 +157,10 @@ export async function POST(req: NextRequest) {
     }
 
     const addedAmount = expectedAmount;
+    // Credits are derived on the server from the stored amount, never taken from the client.
+    // Pack credits are the advertised count for this price; fall back to rate-derived count.
+    const creditsAdded = packForPrice(addedAmount)?.credits
+      ?? Math.floor(addedAmount / (parseFloat(existingWallet.sms_rate) || 50));
 
     // Credit wallet atomically via idempotent RPC with row lock on wallet_transactions.
     // SECURITY: There is deliberately NO fallback to the non-idempotent
@@ -183,7 +214,7 @@ export async function POST(req: NextRequest) {
         tenant_id: tenantId,
         application_id: applicationId,
         phone_number: momoNumber || 'SYSTEM',
-        compiled_message: `SYSTEM CREDIT: Top-up of ${credits.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.balance / (parseFloat(existingWallet.sms_rate) || 50))} credits.`,
+        compiled_message: `SYSTEM CREDIT: Top-up of ${creditsAdded.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.balance / (parseFloat(existingWallet.sms_rate) || 50))} credits.`,
         cost: addedAmount,
         transaction_type: 'credit',
         status: 'delivered',
@@ -199,7 +230,7 @@ export async function POST(req: NextRequest) {
       entityId: existingWallet.id,
       newData: {
         amount: addedAmount,
-        credits,
+        credits: creditsAdded,
         intentId,
         newBalanceUGX: creditResult.balance,
       },
@@ -208,7 +239,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      addedCredits: credits,
+      addedCredits: creditsAdded,
       newBalanceCredits: Math.floor(creditResult.balance / (parseFloat(existingWallet.sms_rate) || 50)),
       newBalanceUGX: creditResult.balance
     });

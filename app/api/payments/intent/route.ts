@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { activationBlockReason } from '@/lib/activation-guard';
 import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
@@ -117,7 +118,7 @@ export async function POST(req: Request) {
     const { data: callerMember } = await supabaseAdminLocal2
       .schema('kunity')
       .from('members')
-      .select('id, organization_id')
+      .select('id, organization_id, status')
       .eq('id', authUser.id)
       .maybeSingle();
 
@@ -170,7 +171,70 @@ export async function POST(req: Request) {
         { status: 400, headers: corsHeaders }
       );
     }
+    // FIN-36: an activation payment needs a savings account to post into. If
+    // the member has none, the payment webhook cannot record the money and
+    // rolls back, so the member would be charged and never activated. Refuse
+    // up front and tell the member to open a plan first.
+    if (isMemberCaller && requestedType === 'account_activation') {
+      // FIN-40: declined/suspended members and members with an activation
+      // payment already in progress may not start another one.
+      const { data: pendingActivation } = await supabaseAdminLocal2
+        .schema('kunity')
+        .from('payment_requests')
+        .select('created_at')
+        .eq('member_id', authUser.id)
+        .eq('organization_id', resolvedOrgId)
+        .eq('payment_type', 'account_activation')
+        .in('status', ['pending', 'processing'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const blockReason = activationBlockReason({
+        memberStatus: callerMember?.status,
+        pendingActivationCreatedAt: pendingActivation?.created_at ?? null,
+        now: Date.now(),
+      });
+      if (blockReason) {
+        return NextResponse.json({ error: blockReason }, { status: 409, headers: corsHeaders });
+      }
+
+      const { data: memberAccounts } = await supabaseAdminLocal2
+        .schema('kunity')
+        .from('accounts')
+        .select('id, is_active')
+        .eq('member_id', authUser.id)
+        .eq('organization_id', resolvedOrgId);
+      if (!memberAccounts || memberAccounts.length === 0) {
+        return NextResponse.json(
+          { error: 'Open a savings plan first, then purchase the activation card.' },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+      // FIN-39: an already-activated member must not pay the activation fee
+      // again (it would be credited to their balance a second time).
+      if (memberAccounts.some((a: any) => a.is_active === true)) {
+        return NextResponse.json(
+          { error: 'Your account is already activated.' },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+    }
+
     // Admin BUY_SMS topups keep their own type (credited via wallet_transactions).
+
+    // FIN-31b: enforce the member minimums SERVER-SIDE. The member app only
+    // enforces them in the browser, so a direct API call could activate an
+    // account (or make a deposit) for any amount, e.g. UGX 1.
+    const MEMBER_MIN_AMOUNTS: Record<string, number> = {
+      account_activation: 5000,
+      deposit: 2000,
+    };
+    if (isMemberCaller && numericAmount < (MEMBER_MIN_AMOUNTS[requestedType] ?? 0)) {
+      return NextResponse.json(
+        { error: `Minimum ${requestedType === 'account_activation' ? 'activation fee' : 'deposit'} is UGX ${MEMBER_MIN_AMOUNTS[requestedType].toLocaleString()}` },
+        { status: 400, headers: corsHeaders }
+      );
+    }
 
     // Fetch tenant code from public.tenants
     let tenantCode = finalOrganizationId;

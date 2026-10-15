@@ -3,6 +3,7 @@ import { createServerClient } from '@supabase/ssr';
 import { paymentGateway } from '@/lib/payments/gateway';
 import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
+import { packForCredits, normalizeUgMomo } from '@/lib/sms-packs';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,14 +22,23 @@ export async function POST(req: NextRequest) {
     });
 
     const body = await req.json();
-    const { token, credits, amount, momoNumber } = body;
+    const { token, credits, momoNumber } = body;
 
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized: Missing token' }, { status: 401 });
     }
 
-    if (!credits || !amount || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ error: 'Invalid credits or price amount' }, { status: 400 });
+    // SECURITY (pentest 2026-10-13): the price is never taken from the client.
+    // The client picks a pack by its credit count; the server sets the price.
+    const pack = packForCredits(credits);
+    if (!pack) {
+      return NextResponse.json({ error: 'Invalid credit pack' }, { status: 400 });
+    }
+    const amount = pack.price;
+
+    const momo = normalizeUgMomo(momoNumber);
+    if (!momo) {
+      return NextResponse.json({ error: 'Invalid mobile money number' }, { status: 400 });
     }
 
     // Verify token using admin client
@@ -111,18 +121,11 @@ export async function POST(req: NextRequest) {
         tenantCode = tenantData.code;
     }
 
-    // Create payment intent
-    const intent = await paymentGateway.createPaymentIntent(amount, "UGX", {
-      source: 'web_app',
-      phoneNumber: momoNumber,
-      organizationId: tenantId,
-      tenantCode: tenantCode,
-      paymentTypeCode: 'BUY_SMS',
-      reference: `PAY-SMS-${Date.now()}`
-    });
-
-    // Record the payment request
-    await supabaseAdmin.schema('public').from('wallet_transactions').insert({
+    // SMS WALLET FIX (2026-10-13): write the pending ledger row BEFORE asking NaJiki for a
+    // payment. Before, the row was written after the call and its insert result was ignored.
+    // If that insert failed, the admin could pay NaJiki with nothing to credit later.
+    const localRef = `PAY-SMS-${crypto.randomUUID()}`;
+    const { error: pendingErr } = await supabaseAdmin.schema('public').from('wallet_transactions').insert({
       id: crypto.randomUUID(),
       wallet_id: wallet.id,
       tenant_id: tenantId,
@@ -131,22 +134,85 @@ export async function POST(req: NextRequest) {
       currency: 'UGX',
       note: 'pending',
       type: 'sms_topup',
-      reference: intent.id,
+      reference: localRef,
       description: 'Pending SMS topup via Mobile Money'
     });
+    if (pendingErr) {
+      console.error('[SMS Topup API] Could not record pending topup, no payment requested:', pendingErr);
+      return NextResponse.json({ error: 'Could not start the top-up. No payment was requested. Try again.' }, { status: 500 });
+    }
+
+    // Create payment intent with NaJiki (the only provider). The local reference is sent as the
+    // idempotency key, so a retried request cannot create a second payment.
+    let intent;
+    try {
+      intent = await paymentGateway.createPaymentIntent(amount, "UGX", {
+        source: 'web_app',
+        phoneNumber: momo,
+        organizationId: tenantId,
+        tenantCode: tenantCode,
+        paymentTypeCode: 'BUY_SMS',
+        reference: localRef
+      });
+    } catch (gatewayErr: any) {
+      // The pending row stays. If NaJiki did take a payment, its webhook or the confirm route
+      // still credits it. A pending row with no NaJiki payment credits nothing.
+      console.error('[SMS Topup API] NaJiki payment request failed:', gatewayErr?.message);
+      return NextResponse.json({ error: `Mobile money request failed: ${gatewayErr?.message || 'NaJiki unavailable'}` }, { status: 502 });
+    }
+
+    // Link the ledger row to NaJiki's reference: the webhook and the confirm route look the top-up
+    // up by that reference. If this link fails, the payment cannot be credited automatically.
+    const najikiRef = String(intent.id);
+    const { error: linkErr } = await supabaseAdmin
+      .schema('public')
+      .from('wallet_transactions')
+      .update({ reference: najikiRef })
+      .eq('reference', localRef)
+      .eq('tenant_id', tenantId);
+    if (linkErr) {
+      console.error('[SMS Topup API] Could not link top-up to NaJiki reference:', linkErr, { localRef, najikiRef });
+      return NextResponse.json({
+        error: `Payment was requested but could not be linked to your account. Contact support with reference ${najikiRef}.`
+      }, { status: 500 });
+    }
+
+    // Record the NaJiki payment in payment_requests, the same way /api/payments/intent does, so the
+    // top-up is visible with the other payments. The wallet credit does NOT depend on this row:
+    // the webhook and confirm route credit from wallet_transactions, and the ledger RPC records
+    // BUY_SMS without posting journal entries. So a failure here is logged, not fatal.
+    const { error: prErr } = await supabaseAdmin.schema('kunity').from('payment_requests').insert({
+      id: crypto.randomUUID(),
+      organization_id: tenantId,
+      member_id: null,
+      amount: amount,
+      currency: 'UGX',
+      phone_number: momo,
+      status: 'pending',
+      direction: 'inbound',
+      idempotency_key: localRef,
+      internal_reference: najikiRef,
+      payment_type: 'BUY_SMS',
+      payload: intent,
+      provider: 'najiki',
+    });
+    if (prErr) {
+      console.error('[SMS Topup API] payment_requests row not written (top-up continues, credit unaffected):', prErr, { najikiRef });
+    }
 
     await logAudit(supabaseAdmin, {
       adminId: user.id,
       tenantId: tenantId,
       action: 'create_sms_topup_intent',
       entityType: 'payment_intent',
-      entityId: intent.id,
-      newData: { amount, credits, momoNumber }
+      entityId: najikiRef,
+      newData: { amount, credits: pack.credits, momoNumber: momo }
     });
 
     return NextResponse.json({
       success: true,
-      intent
+      intent,
+      intentId: najikiRef
     });
 
   } catch (err: any) {

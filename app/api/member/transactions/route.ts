@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Server configuration missing' }, { status: 500 });
     }
 
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const supabaseClient = createServerClient(supabaseUrl, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
       cookies: {
         get(name: string) { return cookieStore.get(name)?.value; }
@@ -88,11 +88,17 @@ export async function POST(req: NextRequest) {
       result = data;
 
     } else if (action === 'loan') {
+      // Loans are applied under an admin-defined loan product, which sets the rate and limits.
+      const productId = body.productId;
+      if (typeof productId !== 'string' || !UUID_RE.test(productId)) {
+        return NextResponse.json({ error: 'Choose a loan product to apply.' }, { status: 400 });
+      }
       const { data, error } = await supabaseAdminLocal.rpc(
-        'member_apply_loan',
+        'member_apply_loan_for_product',
         {
           p_member_id: member.id,
           p_organization_id: member.organization_id,
+          p_product_id: productId,
           p_amount: amount
         }
       );

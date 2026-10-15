@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { profileUpdateLimiter } from '@/lib/rate-limit';
+import { profileUpdateLimiter, registrationLimiter } from '@/lib/rate-limit';
+import { registrationBlockReason, identityChangeReason } from '@/lib/registration-guard';
+import { normalizeJoinCode } from '@/lib/join-code';
 
 export async function POST(req: NextRequest) {
   try {
@@ -59,7 +61,8 @@ export async function POST(req: NextRequest) {
     const { 
       userId, 
       fullName, 
-      orgId, 
+      orgId: requestedOrgId,
+      joinCode,
       email, 
       phone,
       gender,
@@ -80,25 +83,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!orgId) {
-      return NextResponse.json({ error: 'Missing required parameter: orgId' }, { status: 400 });
+    // 4. Tenant Verification (join-link based)
+    // The SACCO is taken ONLY from the join code. Clients can't pick a SACCO by
+    // ID, so every member joins the SACCO whose link they were given.
+    const normalizedCode = normalizeJoinCode(joinCode);
+    if (!normalizedCode) {
+      return NextResponse.json({ error: 'A valid SACCO join link is required to register.' }, { status: 400 });
     }
 
-    // 4. Tenant Verification
-    // Verify that the requested SACCO organization actually exists and is active
     const { data: targetOrg, error: orgErr } = await supabaseAdmin
       .schema('kunity')
       .from('organizations')
       .select('id, name, is_active')
-      .eq('id', orgId)
+      .eq('join_code', normalizedCode)
       .maybeSingle();
 
     if (orgErr || !targetOrg) {
-      return NextResponse.json({ error: 'Invalid organization: Target SACCO not found' }, { status: 404 });
+      return NextResponse.json({ error: 'Invalid join link: SACCO not found' }, { status: 404 });
     }
 
     if (!targetOrg.is_active) {
       return NextResponse.json({ error: 'Forbidden: Selected SACCO organization is inactive' }, { status: 403 });
+    }
+
+    const orgId: string = targetOrg.id;
+
+    // Any orgId sent by the client must agree with the join code.
+    if (requestedOrgId && requestedOrgId !== orgId) {
+      return NextResponse.json(
+        { error: 'Forbidden: Organization does not match the join link' },
+        { status: 403 }
+      );
     }
 
     // If signup metadata specified a tenant_id, ensure orgId matches
@@ -114,7 +129,7 @@ export async function POST(req: NextRequest) {
     const { data: existingMember, error: fetchMemberErr } = await supabaseAdmin
       .schema('kunity')
       .from('members')
-      .select('id, organization_id, status, phone, first_name, last_name')
+      .select('id, organization_id, status, phone, first_name, last_name, national_id, date_of_birth, gender')
       .eq('id', authenticatedUserId)
       .maybeSingle();
 
@@ -136,6 +151,40 @@ export async function POST(req: NextRequest) {
           { error: 'Forbidden: Member already belongs to another SACCO organization. Cross-tenant migration is prohibited.' },
           { status: 403 }
         );
+      }
+
+      // Identity fields are locked once the membership has been processed.
+      const identityBlock = identityChangeReason({
+        memberStatus: existingMember.status,
+        stored: {
+          national_id: existingMember.national_id,
+          date_of_birth: existingMember.date_of_birth,
+          gender: existingMember.gender,
+        },
+        incoming: {
+          ...(nationalId !== undefined ? { national_id: nationalId } : {}),
+          ...(dateOfBirth !== undefined ? { date_of_birth: dateOfBirth } : {}),
+          ...(gender !== undefined ? { gender } : {}),
+        },
+      });
+      if (identityBlock) {
+        return NextResponse.json({ error: identityBlock }, { status: 403 });
+      }
+
+      // A changed National ID must not belong to another member of this SACCO.
+      if (nationalId && String(nationalId).trim() !== String(existingMember.national_id ?? '').trim()) {
+        const { data: nidTaken } = await supabaseAdmin
+          .schema('kunity')
+          .from('members')
+          .select('id')
+          .eq('organization_id', orgId)
+          .eq('national_id', String(nationalId).trim())
+          .neq('id', authenticatedUserId)
+          .limit(1)
+          .maybeSingle();
+        if (nidTaken) {
+          return NextResponse.json({ error: 'This National ID is already registered with this SACCO. Please contact your SACCO.' }, { status: 409 });
+        }
       }
 
       // Safe update: Only mutate allowable profile fields, never overwrite status or tenant
@@ -170,6 +219,52 @@ export async function POST(req: NextRequest) {
     }
 
     // 6. New Member Registration
+    // Rate-limit new profiles per client network: one person can otherwise mint
+    // unlimited accounts (and welcome SMS) by signing up again.
+    const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+    try {
+      await registrationLimiter.check(5, `register:${clientIp}`);
+    } catch (rlErr: unknown) {
+      return NextResponse.json({ error: (rlErr as Error).message }, { status: 429 });
+    }
+
+    // A person already declined by THIS SACCO may not re-register under a new
+    // email (matched by National ID or phone); a National ID already held by
+    // another member of this SACCO is refused.
+    // Two plain equality lookups (no string-built filter from user input).
+    let matchesDeclinedMember = false;
+    const declinedChecks: Array<[string, string]> = [];
+    if (nationalId) declinedChecks.push(['national_id', String(nationalId).trim()]);
+    if (phone) declinedChecks.push(['phone', String(phone).trim()]);
+    for (const [column, value] of declinedChecks) {
+      const { data: declined } = await supabaseAdmin
+        .schema('kunity')
+        .from('members')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('status', 'rejected')
+        .eq(column, value)
+        .limit(1)
+        .maybeSingle();
+      if (declined) matchesDeclinedMember = true;
+    }
+    let nationalIdTakenByOtherMember = false;
+    if (nationalId) {
+      const { data: nidTaken } = await supabaseAdmin
+        .schema('kunity')
+        .from('members')
+        .select('id')
+        .eq('organization_id', orgId)
+        .eq('national_id', String(nationalId).trim())
+        .limit(1)
+        .maybeSingle();
+      nationalIdTakenByOtherMember = !!nidTaken;
+    }
+    const registrationBlock = registrationBlockReason({ matchesDeclinedMember, nationalIdTakenByOtherMember });
+    if (registrationBlock) {
+      return NextResponse.json({ error: registrationBlock }, { status: 403 });
+    }
+
     // Strictly create the member under authenticatedUserId and verified orgId
     const newMemberData = {
       id: authenticatedUserId,
@@ -195,6 +290,9 @@ export async function POST(req: NextRequest) {
       .schema('kunity')
       .from('members')
       .insert(newMemberData);
+    // SMS SAFETY: only the request that created the row sends the welcome SMS. A racing
+    // request that hits the duplicate-key branch below must not send a second one.
+    const createdHere = !insertErr;
 
     if (insertErr) {
       // If a database trigger inserted a minimal row concurrently during auth signup:
@@ -228,13 +326,15 @@ export async function POST(req: NextRequest) {
     }
 
     // 7. Queue Member Welcome SMS Notification
-    if (phone) {
+    if (phone && createdHere) {
       const shortId = authenticatedUserId.slice(0, 8).toUpperCase();
       const saccoName = targetOrg.name || 'our SACCO';
-      const welcomeMsg = `Hello ${firstName}, welcome to ${saccoName}! Your membership application has been submitted and is pending verification. Your Member ID is: ${shortId}.`;
+      const welcomeMsg = `Hello ${firstName}, welcome to ${saccoName}! Your membership application has been received. Your Member ID is: ${shortId}. Keep this ID for your records.`;
       try {
         const { inngest } = await import('@/lib/inngest/client');
         await inngest.send({
+          // Deduplicates the welcome SMS per member for the event retention window.
+          id: `welcome-${authenticatedUserId}`,
           name: 'sms/dispatch',
           data: {
             tenantId: orgId,

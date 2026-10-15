@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { interpolateTemplate } from './sms-templates';
 import { normalizeUgandanPhone } from './validators';
+import { smsSegments } from './sms-segments';
 
 export interface SmsResult {
   success: boolean;
@@ -99,11 +100,8 @@ export async function sendSms({
     }
 
     // 1. Calculate message cost details
-    const textLength = finalMessage.trim().length;
-    let segments = 1;
-    if (textLength > 160) {
-      segments = Math.ceil(textLength / 153);
-    }
+    // SECURITY (pentest 2026-10-13): real GSM-7 / UCS-2 segment count.
+    const segments = smsSegments(finalMessage.trim());
     const defaultCostPerSms = 50.00;
 
     // 2. Fetch active wallet from public.wallets (Sacco schema)
@@ -194,9 +192,13 @@ export async function sendSms({
     }
 
     // 3. Deduct balance directly from public.wallets with deterministic idempotency key
-    const resolvedIdempotencyKey = idempotencyKey 
-      ? `debit_${idempotencyKey}` 
-      : `debit_${crypto.createHash('sha256').update(`${tenantId}:${cleanPhone}:${eventType}:${finalMessage}`).digest('hex').substring(0, 32)}`;
+    // FIN-32: never derive the debit key from message CONTENT. A content hash
+    // makes an identical message to the same phone look like a replay, so the
+    // second send went out without being charged. Callers that need retry
+    // safety pass a stable idempotencyKey (the Inngest event id does this).
+    const resolvedIdempotencyKey = idempotencyKey
+      ? `debit_${idempotencyKey}`
+      : `debit_${crypto.randomUUID()}`;
 
     const { data: debitResult, error: debitErr } = await supabaseAdmin
       .rpc('debit_sms_wallet', {
@@ -221,6 +223,9 @@ export async function sendSms({
     const najikiUrl = process.env.NAJIKI_API_URL;
     const apiKey = process.env.NAJIKI_API_KEY;
     const applicationCode = process.env.NAJIKI_APPLICATION_CODE || 'sacco';
+    // The caller's own key (e.g. the Inngest event id) goes to NaJiki, so a retry of the same
+    // event is recognised there as well as by the wallet debit.
+    const najikiIdempotencyKey = idempotencyKey || resolvedIdempotencyKey;
     
     let tenantCode = process.env.NAJIKI_TENANT_CODE;
     try {
@@ -246,7 +251,10 @@ export async function sendSms({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${apiKey}`,
+          // NaJiki deduplicates on this key (unique per application), so a retried dispatch
+          // returns the original SMS instead of sending and charging it again.
+          'Idempotency-Key': najikiIdempotencyKey,
         },
         body: JSON.stringify({
           applicationCode,
@@ -256,7 +264,9 @@ export async function sendSms({
           to: cleanPhone,
           message: finalMessage,
           eventType,
-          from: applicationCode
+          idempotencyKey: najikiIdempotencyKey,
+          // No `from`: NaJiki sends with its own registered sender ID. Passing the application
+          // code here made it the sender ID, which the mobile network rejects.
         }),
         signal: AbortSignal.timeout(10000)
       });
@@ -266,6 +276,48 @@ export async function sendSms({
         throw new Error(`HTTP_${response.status}: ${errorText}`);
       }
       console.log(`[SMS Service] Successfully dispatched to NaJiki for ${recipientPhone}`);
+
+      // SMS WORKFLOW FIX (2026-10-13): record the successful send in the SACCO's SMS log,
+      // not only the failures, so admins can see what members were sent.
+      let providerId: string | null = null;
+      let najikiSmsId: string | null = null;
+      try {
+        const body = await response.clone().json();
+        providerId = body?.messageId || body?.id || body?.data?.messageId || null;
+        najikiSmsId = body?.smsId ? String(body.smsId) : null;
+      } catch {
+        providerId = null;
+      }
+      // Link NaJiki's smsId to this debit. If NaJiki later reports SMS_DELIVERY_UPDATE 'failed',
+      // the webhook finds the debit by this marker and refunds it.
+      if (najikiSmsId) {
+        const { error: linkErr } = await supabaseAdmin
+          .schema('public')
+          .from('wallet_transactions')
+          .update({ description: `najiki_sms:${najikiSmsId}` })
+          .eq('reference', resolvedIdempotencyKey)
+          .eq('direction', 'debit');
+        if (linkErr) {
+          console.error('[SMS Service] Could not link SMS to its debit; a failed delivery will need manual refund:', linkErr, { najikiSmsId });
+        }
+      }
+      const { error: sentLogErr } = await supabaseAdmin
+        .schema('public')
+        .from('sms_messages')
+        .insert({
+          tenant_id: tenantId,
+          application_id: applicationId,
+          phone_number: cleanPhone,
+          compiled_message: finalMessage,
+          cost: totalCost,
+          transaction_type: 'debit',
+          status: 'sent',
+          event_code: eventType || null,
+          provider_message_id: providerId ? String(providerId) : `sent_${crypto.randomUUID()}`
+        });
+      if (sentLogErr) {
+        console.warn(`[SMS Service] Sent-message log insert failed (message was dispatched): ${sentLogErr.message}`);
+      }
     } catch (err: any) {
       console.error(`[SMS Service] NaJiki dispatch failed:`, err);
       
@@ -279,9 +331,8 @@ export async function sendSms({
         // `p_idempotency_key` parameter that function does not accept — the RPC
         // lookup always failed, so failed SMS were debited but NEVER refunded.
         // Use the dedicated idempotent refund RPC instead.
-        const refundReference = idempotencyKey
-          ? `refund_${idempotencyKey}`
-          : `refund_${crypto.createHash('sha256').update(`${tenantId}:${cleanPhone}:${eventType}:${finalMessage}`).digest('hex').substring(0, 32)}`;
+        // Tied to the debit key so each refund maps to exactly one charge.
+        const refundReference = `refund_${resolvedIdempotencyKey}`;
 
         const { data: refundResult, error: refundErr } = await supabaseAdmin
           .rpc('refund_sms_wallet', {
@@ -307,7 +358,7 @@ export async function sendSms({
           .insert({
             tenant_id: tenantId,
             application_id: applicationId,
-            phone_number: recipientPhone,
+            phone_number: cleanPhone,
             compiled_message: finalMessage,
             cost: totalCost,
             transaction_type: 'debit',
@@ -326,7 +377,7 @@ export async function sendSms({
         .insert({
           tenant_id: tenantId,
           application_id: applicationId,
-          phone_number: recipientPhone,
+          phone_number: cleanPhone,
           compiled_message: finalMessage,
           cost: totalCost,
           transaction_type: 'debit',

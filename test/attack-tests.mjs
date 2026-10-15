@@ -273,13 +273,15 @@ async function runFixedVerification() {
   const okAcao = r.headers.get('access-control-allow-origin');
   record('T18 no-regression: configured origin allowed', okAcao === 'http://localhost:3000', `ACAO=${okAcao}`);
 
-  // T19: organizations active-only — cookieless (proves the pre-login signup
-  // dropdown endpoint is reachable without a session and only lists ACTIVE orgs)
+  // T19 KUN-06: the public SACCO list is gone (it leaked every SACCO, including inactive ones).
+  // Sign-up now resolves a join code to ONE SACCO via /api/organizations/resolve, which only
+  // answers for active SACCOs (is_active check in the route) and never lists others.
   r = await call(NEW, { method: 'GET', path: '/api/organizations' });
-  const orgs = (r.json && r.json.organizations) || [];
-  record('T19 KUN-06: only ACTIVE organizations listed (and reachable pre-login)',
-    r.status === 200 && orgs.length === 2 && !orgs.some(o => o.id === ORG_X),
-    `status=${r.status} count=${orgs.length}`);
+  const listGone = r.status === 404 || r.status === 405 || !(r.json && Array.isArray(r.json.organizations));
+  record('T19 KUN-06: no public list of organizations', listGone, `status=${r.status}`);
+  r = await call(NEW, { method: 'GET', path: '/api/organizations/resolve?code=ABCDEFGHJK' });
+  const leaks = r.json && (r.json.organizations || r.json.organization);
+  record('T19b KUN-06: unknown join code resolves to nothing (no names leaked)', r.status === 404 && !leaks, `status=${r.status}`);
 
   // T20-T22: open-account product validation
   r = await call(NEW, { path: '/api/member/open-account', token: 'token-member-b', body: { productId: 'prod-a-1' } });

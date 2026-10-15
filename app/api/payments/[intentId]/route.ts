@@ -6,6 +6,10 @@ export async function GET(
 ) {
   try {
     const { intentId } = await params;
+    // SECURITY: intentId is forwarded into an upstream URL; accept only plain ids.
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(intentId || '')) {
+      return NextResponse.json({ error: 'Invalid payment reference' }, { status: 400 });
+    }
 
     const authHeader = req.headers.get('authorization');
     let token = null;
@@ -32,7 +36,7 @@ export async function GET(
     const { data: requestRecord } = await supabaseAdmin
       .schema('kunity')
       .from('payment_requests')
-      .select('member_id')
+      .select('member_id, status, organization_id')
       .eq('internal_reference', intentId)
       .maybeSingle();
 
@@ -40,14 +44,41 @@ export async function GET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
+    // FIN-35: our ledger is the source of truth for "paid". The gateway can
+    // report success before the webhook has credited the member and activated
+    // the account, so the app must not show "activated" from the gateway alone.
+    // Only report success once the database says so; while the gateway says
+    // success but our webhook hasn't landed yet, report 'processing'.
+    const dbStatus = String(requestRecord.status || '').toLowerCase();
+    if (dbStatus === 'success' || dbStatus === 'successful') {
+      return NextResponse.json({ status: 'success', source: 'ledger' });
+    }
+    if (dbStatus === 'failed') {
+      return NextResponse.json({ status: 'failed', source: 'ledger' });
+    }
+
     const apiUrl = process.env.NAJIKI_API_URL || "https://najiki.netlify.app";
     const apiKey = process.env.NAJIKI_API_KEY || "";
-    const response = await fetch(`${apiUrl}/api/payments/${intentId}`, {
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
+    // NaJiki returns 404 for a tenant-scoped payment unless the caller names the same tenant code
+    // that was sent when the payment was created (see /api/payments/intent). Use the same lookup.
+    let tenantCode: string = requestRecord.organization_id;
+    const { data: tenantRow } = await supabaseAdmin
+      .schema('public')
+      .from('tenants')
+      .select('code')
+      .eq('id', requestRecord.organization_id)
+      .maybeSingle();
+    if (tenantRow?.code) tenantCode = tenantRow.code;
+
+    const response = await fetch(
+      `${apiUrl}/api/payments/${encodeURIComponent(intentId)}?tenantCode=${encodeURIComponent(tenantCode)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        }
       }
-    });
+    );
     if (!response.ok) {
       return NextResponse.json(
         { error: `Failed to fetch payment status: ${response.statusText}` },
@@ -55,6 +86,10 @@ export async function GET(
       );
     }
     const data = await response.json();
+    const gatewayStatus = String(data?.status || '').toLowerCase();
+    if (gatewayStatus === 'success' || gatewayStatus === 'successful') {
+      return NextResponse.json({ ...data, status: 'processing', source: 'gateway' });
+    }
     return NextResponse.json(data);
   } catch (err: any) {
     console.error("Error fetching payment status:", err);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { apiLimiter } from '@/lib/rate-limit';
+import { LOW_SMS_BALANCE_CREDITS } from '@/lib/sms-alerts';
 
 export async function POST(req: NextRequest) {
   try {
@@ -152,17 +153,16 @@ export async function POST(req: NextRequest) {
     const saccoName = kunityOrg?.name || tenantData?.name || 'SaccoConnect';
     const tenantCode = kunityOrg?.code || tenantData?.code || saccoName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     
-    let apiKey = '';
+    // SECURITY (pentest 2026-10-13): the API key is never returned again. Only whether one
+    // exists is shown; rotating (POST /api/admin/api-key) issues a new key once.
+    let apiKeySet = false;
     if (tenantData?.application_id) {
       const { data: appData } = await supabaseAdmin
         .from('applications')
-        .select('api_key')
+        .select('api_key_hash')
         .eq('id', tenantData.application_id)
         .maybeSingle();
-        
-      if (appData?.api_key) {
-        apiKey = appData.api_key;
-      }
+      apiKeySet = !!appData?.api_key_hash;
     }
 
     // 2. Fetch SMS Wallet Balance from Sacco Wallets (public.wallets)
@@ -319,7 +319,8 @@ export async function POST(req: NextRequest) {
       orgId,
       saccoName,
       tenantCode,
-      apiKey,
+      apiKey: '',
+      apiKeySet,
       allOrganizations: allOrgs,
       currentOrganization: kunityOrg || { id: orgId, name: saccoName, code: tenantCode },
       stats: {
@@ -346,6 +347,9 @@ export async function POST(req: NextRequest) {
       savingsProducts: savingsProducts || [],
       recentTransactions: transactions,
       smsBalance: Math.floor(walletBalance / smsRate),
+      // SMS WORKFLOW FIX: automatic member SMS silently fail when the balance is too low.
+      // The dashboard warns the admin before that happens.
+      smsLowBalance: walletBalance < smsRate * LOW_SMS_BALANCE_CREDITS,
       smsRate,
       smsHistory,
       adminProfile: adminProfile || { full_name: adminAuth.user.email?.split('@')[0] || 'Administrator', role: 'sacco_admin' }

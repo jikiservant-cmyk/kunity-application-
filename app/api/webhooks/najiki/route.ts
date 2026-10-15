@@ -10,53 +10,87 @@ function getSupabaseAdmin() {
   );
 }
 
-// Verify webhook signature (Najiki should provide X-Najiki-Signature header)
-function verifyWebhookSignature(rawBody: string, signatureHeader: string | null): boolean {
-  const webhookSecret = process.env.NAJIKI_API_KEY;
-  
+// Verify a NaJiki notification. Matches NaJiki's signer (src/lib/notification-signature.ts):
+//   X-Najiki-Timestamp: <unix ms>
+//   X-Najiki-Signature: t=<unix ms>,v=<hex HMAC-SHA256 of "<t>.<raw body>">
+// The secret is the application's webhook secret. NaJiki falls back to the application API key
+// when no separate webhook secret is set, so NAJIKI_WEBHOOK_SECRET defaults to NAJIKI_API_KEY.
+// The timestamp is inside the signed string and must be within 5 minutes, so a captured body
+// cannot be replayed later.
+const NAJIKI_MAX_SKEW_MS = 5 * 60 * 1000;
+
+function verifyWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  timestampHeader: string | null
+): boolean {
+  const secret = process.env.NAJIKI_WEBHOOK_SECRET || process.env.NAJIKI_API_KEY;
+
   // Security Guard: fail closed
-  if (!webhookSecret || webhookSecret === 'your-najiki-webhook-secret-here') {
-    console.error('[Najiki Webhook] ERROR: NAJIKI_API_KEY not configured. Webhook rejected for security.');
+  if (!secret || secret === 'your-najiki-webhook-secret-here') {
+    console.error('[Najiki Webhook] ERROR: NaJiki webhook secret not configured. Webhook rejected for security.');
+    return false;
+  }
+  if (!signatureHeader || !timestampHeader) {
+    console.error('[Najiki Webhook] Missing X-Najiki-Signature or X-Najiki-Timestamp header');
     return false;
   }
 
-  if (!signatureHeader) {
-    console.error('[Najiki Webhook] Missing X-Najiki-Signature header');
+  const match = /^t=(\d+),v=([0-9a-f]+)$/i.exec(signatureHeader.trim());
+  if (!match) return false;
+  const signedAt = Number(match[1]);
+  if (!Number.isFinite(signedAt) || String(signedAt) !== timestampHeader.trim()) return false;
+  if (Math.abs(Date.now() - signedAt) > NAJIKI_MAX_SKEW_MS) {
+    console.error('[Najiki Webhook] Stale or future timestamp rejected');
     return false;
   }
 
-  const cleanSig = signatureHeader.replace(/^sha256=/, '').trim();
-  const digestHex = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-  const digestBase64 = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('base64');
+  const expected = crypto.createHmac('sha256', secret).update(`${signedAt}.${rawBody}`).digest('hex');
+  const received = Buffer.from(match[2].toLowerCase(), 'hex');
+  const want = Buffer.from(expected, 'hex');
+  return received.length === want.length && crypto.timingSafeEqual(received, want);
+}
 
-  // Try hex matching
-  try {
-    const sigBuf = Buffer.from(cleanSig, 'hex');
-    const digestBuf = Buffer.from(digestHex, 'hex');
-    if (sigBuf.length === digestBuf.length && crypto.timingSafeEqual(sigBuf, digestBuf)) {
-      return true;
-    }
-  } catch {}
+// Refund the wallet debit that paid for a NaJiki SMS that failed to deliver. Idempotent: the refund
+// reference is derived from smsId, and refund_sms_wallet never refunds the same reference twice.
+async function refundFailedSms(
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  smsId: string
+): Promise<'refunded' | 'not_found' | 'error'> {
+  const { data: debit, error } = await supabaseAdmin
+    .schema('public')
+    .from('wallet_transactions')
+    .select('wallet_id, amount')
+    .eq('description', `najiki_sms:${smsId}`)
+    .eq('direction', 'debit')
+    .maybeSingle();
+  if (error) {
+    console.error('[Najiki Webhook] Could not look up SMS debit:', error);
+    return 'error';
+  }
+  if (!debit) return 'not_found';
 
-  // Try base64 matching
-  try {
-    const sigBuf = Buffer.from(cleanSig, 'base64');
-    const digestBuf = Buffer.from(digestBase64, 'base64');
-    if (sigBuf.length === digestBuf.length && crypto.timingSafeEqual(sigBuf, digestBuf)) {
-      return true;
-    }
-  } catch {}
-
-  return false;
+  const { error: refundErr } = await supabaseAdmin.rpc('refund_sms_wallet', {
+    p_wallet_id: debit.wallet_id,
+    p_amount: Number(debit.amount),
+    p_reference: `refund_najiki_${smsId}`,
+  });
+  if (refundErr) {
+    console.error('[Najiki Webhook] Refund RPC failed:', refundErr);
+    return 'error';
+  }
+  console.log(`[Najiki Webhook] Refunded failed SMS smsId=${smsId}`);
+  return 'refunded';
 }
 
 export async function POST(req: Request) {
   try {
     const rawBody = await req.text();
     const signatureHeader = req.headers.get('x-najiki-signature');
+    const timestampHeader = req.headers.get('x-najiki-timestamp');
 
     // 1. Verify webhook signature FIRST!
-    if (!verifyWebhookSignature(rawBody, signatureHeader)) {
+    if (!verifyWebhookSignature(rawBody, signatureHeader, timestampHeader)) {
       console.error('[Najiki Webhook] Invalid signature');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
@@ -67,6 +101,27 @@ export async function POST(req: Request) {
     } catch {
       console.error('[Najiki Webhook] Invalid JSON payload');
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+    }
+
+    // SMS delivery updates share this endpoint (NaJiki sends them to the same webhook path).
+    // They are not payments: acknowledge them so NaJiki does not treat the call as failed.
+    // A 'failed' update means NaJiki could not deliver the message, so the sender's wallet is refunded.
+    // The debit was linked to NaJiki's smsId when the message was queued (lib/sms.ts, messaging gateway).
+    if (body?.eventType === 'SMS_DELIVERY_UPDATE') {
+      const smsId = body.smsId ? String(body.smsId) : '';
+      console.log(`[Najiki Webhook] SMS delivery update ${body.reference ?? smsId}: ${body.status}`);
+      if (body.status === 'failed' && smsId) {
+        const outcome = await refundFailedSms(getSupabaseAdmin(), smsId);
+        if (outcome === 'error') {
+          // NaJiki does not retry delivery updates, so this must be visible in logs for manual refund.
+          console.error(`[Najiki Webhook] REFUND FAILED for smsId=${smsId}; needs manual review`);
+          return NextResponse.json({ error: 'Refund failed' }, { status: 500 });
+        }
+        if (outcome === 'not_found') {
+          console.warn(`[Najiki Webhook] No wallet debit linked to smsId=${smsId}; nothing to refund`);
+        }
+      }
+      return NextResponse.json({ received: true, eventType: 'SMS_DELIVERY_UPDATE' });
     }
 
     // NaJiki webhook payload
@@ -165,6 +220,15 @@ export async function POST(req: Request) {
 
     console.log('[Najiki Webhook] Success:', result);
 
+    // FIN-38: the ledger REJECTED this event (amount/currency mismatch, unknown
+    // reference, held payment type). Do not acknowledge with 200: the gateway
+    // would stop retrying and nothing would alert anyone. A non-2xx keeps the
+    // event in the gateway's retry/alert queue until ops resolve it.
+    if (result && result.success === false) {
+      console.error('[Najiki Webhook] Rejected by ledger:', result);
+      return NextResponse.json({ error: result.error || 'Rejected', data: result }, { status: 409 });
+    }
+
     // 3. If newly processed successful deposit, send an automated SMS notification
     if (result && result.message === 'Success recorded. Journal entries created.') {
       try {
@@ -175,6 +239,7 @@ export async function POST(req: Request) {
           .select(`
             amount,
             payment_type,
+            internal_reference,
             organization_id,
             member_id,
             members (
@@ -197,17 +262,25 @@ export async function POST(req: Request) {
           const formattedAmount = rawAmount.toLocaleString();
           
           if (phone) {
-            const typeLabel = depInfo.payment_type === 'account_activation' ? 'Account Activation Deposit' : 'Savings Deposit';
-            const messageText = `Dear {{first_name}}, your {{payment_type}} of UGX {{amount}} has been received and credited to your SACCO account successfully. TxRef: {{tx_ref}}. Thank you!`;
+            // SAME RULE AS THE LEDGER RPC: activation is recognised as income (membership fee),
+            // not credited to a savings account, so it gets a receipt, not a deposit alert.
+            const isActivation = depInfo.payment_type === 'account_activation'
+              || String(depInfo.internal_reference || '').startsWith('PAY-ACT-');
+            const typeLabel = isActivation ? 'Account Activation Deposit' : 'Savings Deposit';
+            const messageText = isActivation
+              ? `Dear {{first_name}}, we have received your membership activation fee of UGX {{amount}}. TxRef: {{tx_ref}}. Thank you!`
+              : `Dear {{first_name}}, your {{payment_type}} of UGX {{amount}} has been received and credited to your SACCO account successfully. TxRef: {{tx_ref}}. Thank you!`;
             
             const { inngest } = await import('../../../../lib/inngest/client');
             await inngest.send({
+              // Replays of the same NaJiki event must not send a second SMS.
+              id: `deposit-sms-${reference}`,
               name: 'sms/dispatch',
               data: {
                 tenantId: depInfo.organization_id,
                 recipientPhone: phone,
                 message: messageText,
-                eventType: 'DEPOSIT_ALERT',
+                eventType: isActivation ? 'ACTIVATION_RECEIPT' : 'DEPOSIT_ALERT',
                 originUrl: req.url,
                 templateData: {
                   first_name: firstName,

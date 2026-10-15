@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import ProductsSettings from './ProductsSettings';
 import { 
   Building2, Users, CreditCard, Send, Shield, RefreshCw, LogOut, 
   ArrowUpRight, ArrowDownLeft, CheckCircle2, XCircle, AlertCircle, 
@@ -90,6 +91,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [allOrganizations, setAllOrganizations] = useState<any[]>([]);
   const [showOrgDropdown, setShowOrgDropdown] = useState(false);
   const [apiKey, setApiKey] = useState('');
+  const [apiKeySet, setApiKeySet] = useState(false);
+  const [rotatingKey, setRotatingKey] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joinLink, setJoinLink] = useState('');
+  const [joinCodeBusy, setJoinCodeBusy] = useState(false);
 
   // Tenant-Scoped Metrics
   const [stats, setStats] = useState({
@@ -118,6 +124,8 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [savingsProducts, setSavingsProducts] = useState<any[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
   const [smsBalance, setSmsBalance] = useState(0);
+  const smsRequestIdRef = useRef<string | null>(null);
+  const [smsLowBalance, setSmsLowBalance] = useState(false);
   const [smsRate, setSmsRate] = useState(50);
   const [smsHistory, setSmsHistory] = useState<any[]>([]);
 
@@ -166,7 +174,81 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     return 'Good evening';
   }, []);
 
+  // SMS gateway API key: rotating issues a new key and invalidates the old one.
+  // The key is shown once in this session; it is never loaded again.
+  const rotateApiKey = async () => {
+    if (apiKeySet && !window.confirm('Rotating the API key stops the current key working immediately. Continue?')) {
+      return;
+    }
+    try {
+      setRotatingKey(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch('/api/admin/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: session.access_token, organizationId: orgId || undefined }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setApiKey(data.apiKey);
+        setApiKeySet(true);
+        setToastMessage({ type: 'success', text: 'New API key issued. Copy it now; it will not be shown again.' });
+      } else {
+        setToastMessage({ type: 'error', text: data.error || 'Could not rotate the API key' });
+      }
+    } catch {
+      setToastMessage({ type: 'error', text: 'Could not rotate the API key' });
+    } finally {
+      setRotatingKey(false);
+    }
+  };
+
+  // Member join link (Settings tab). action: 'get' | 'regenerate'.
+  const loadJoinCode = async (action: 'get' | 'regenerate' = 'get') => {
+    try {
+      setJoinCodeBusy(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch('/api/admin/join-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: session.access_token, action, organizationId: orgId || undefined }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setJoinCode(data.joinCode);
+        setJoinLink(`${window.location.origin}/auth?sacco=${data.joinCode}`);
+        if (action === 'regenerate') {
+          setToastMessage({ type: 'success', text: 'New join link created. The old link no longer works.' });
+        }
+      } else {
+        setToastMessage({ type: 'error', text: data.error || 'Could not load the join link' });
+      }
+    } catch {
+      setToastMessage({ type: 'error', text: 'Could not load the join link' });
+    } finally {
+      setJoinCodeBusy(false);
+    }
+  };
+
+  const copyJoinLink = async () => {
+    try {
+      await navigator.clipboard.writeText(joinLink);
+      setToastMessage({ type: 'success', text: 'Join link copied. Share it with your members.' });
+    } catch {
+      setToastMessage({ type: 'error', text: 'Could not copy. Select the link and copy it manually.' });
+    }
+  };
+
   // Fetch Admin Data from Tenant-Scoped API
+  useEffect(() => {
+    if (activeTab === 'tenant' && orgId) {
+      queueMicrotask(() => loadJoinCode('get'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, orgId]);
+
   const fetchAdminData = async () => {
     try {
       setRefreshing(true);
@@ -191,6 +273,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         setSaccoName(data.saccoName || 'K-Unity SACCO');
         setTenantCode(data.tenantCode || 'kunity');
         setApiKey(data.apiKey || '');
+        setApiKeySet(!!data.apiKeySet);
         setAllOrganizations(data.allOrganizations || []);
         setStats(data.stats || {});
         setMembers(data.members || []);
@@ -199,6 +282,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         setSavingsProducts(data.savingsProducts || []);
         setRecentTransactions(data.recentTransactions || []);
         setSmsBalance(data.smsBalance || 0);
+        setSmsLowBalance(!!data.smsLowBalance);
         setSmsRate(data.smsRate || 50);
         setSmsHistory(data.smsHistory || []);
         setAdminProfile(data.adminProfile || {});
@@ -222,7 +306,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   }, []);
 
   // Member Approval Action Handler
-  const handleMemberAction = async (memberId: string, action: 'approve' | 'reject' | 'suspend' | 'set_pending') => {
+  const handleMemberAction = async (memberId: string, action: 'reject' | 'suspend' | 'set_pending') => {
     try {
       setProcessingMemberId(memberId);
       const { data: { session } } = await supabase.auth.getSession();
@@ -243,7 +327,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
       if (res.ok && data.success) {
         setToastMessage({ type: 'success', text: data.message });
         if (selectedMemberModal?.id === memberId) {
-          setSelectedMemberModal((prev: any) => prev ? { ...prev, status: action === 'approve' ? 'active' : action === 'reject' ? 'rejected' : 'suspended' } : null);
+          setSelectedMemberModal((prev: any) => prev ? { ...prev, status: action === 'reject' ? 'rejected' : 'suspended' } : null);
         }
         await fetchAdminData();
       } else {
@@ -302,9 +386,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
+      // "All members" is resolved on the server from the database, so every member is included.
       let recipients: string[] = [];
       if (smsRecipientType === 'all') {
-        recipients = members.map(m => m.phone).filter(Boolean);
+        recipients = [];
       } else if (smsRecipientType === 'single') {
         if (!singleRecipientPhone.trim()) {
           setToastMessage({ type: 'error', text: 'Enter recipient phone number' });
@@ -316,26 +401,36 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         recipients = customPhoneList.split(/[\n,]+/).map(p => p.trim()).filter(Boolean);
       }
 
-      if (recipients.length === 0) {
+      if (smsRecipientType !== 'all' && recipients.length === 0) {
         setToastMessage({ type: 'error', text: 'No valid phone recipients selected' });
         setIsSendingSms(false);
         return;
       }
 
+      // One request ID per draft: a retry after a lost response is refused by the server
+      // instead of broadcasting twice. A new draft gets a new ID.
+      if (!smsRequestIdRef.current) {
+        smsRequestIdRef.current = `bc-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      }
       const res = await fetch('/api/admin/sms/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: session.access_token,
+          recipientType: smsRecipientType === 'all' ? 'all' : undefined,
           recipients,
           message: smsMessageText,
-          organizationId: orgId
+          organizationId: orgId,
+          requestId: smsRequestIdRef.current
         })
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setToastMessage({ type: 'success', text: `Broadcast dispatched to ${recipients.length} recipients!` });
+        smsRequestIdRef.current = null;
+        const sent = data.recipientsCount ?? recipients.length;
+        const skipped = data.skippedInvalid ? ` (${data.skippedInvalid} member record(s) had no valid number and were skipped)` : '';
+        setToastMessage({ type: 'success', text: `Broadcast dispatched to ${sent} recipients!${skipped}` });
         setSmsMessageText('');
         await fetchAdminData();
       } else {
@@ -365,7 +460,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: session.access_token,
-          amount: selectedPack.price,
           momoNumber: momoNumber,
           credits: selectedPack.credits,
           phone: momoNumber,
@@ -375,10 +469,12 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setToastMessage({ type: 'success', text: 'Payment initialized! Check your mobile phone to enter your PIN.' });
+        setToastMessage({ type: 'success', text: 'Payment requested. Check your phone and enter your PIN. Credits are added once the payment is confirmed.' });
         setShowBuyModal(false);
         setSelectedPack(null);
         await fetchAdminData();
+        // Credits used to appear only if NaJiki's webhook reached us. Confirm the payment here too.
+        void waitForTopupConfirmation(session.access_token, data.intentId || data.intent?.id);
       } else {
         setToastMessage({ type: 'error', text: data.error || 'Mobile money prompt failed' });
       }
@@ -387,6 +483,46 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     } finally {
       setIsProcessingBuy(false);
     }
+  };
+
+  // Polls the server until the NaJiki payment is confirmed and the credits are added.
+  // The confirm route checks NaJiki and credits idempotently, so repeated polls are safe.
+  const waitForTopupConfirmation = async (accessToken: string, intentId?: string) => {
+    if (!intentId) return;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const res = await fetch('/api/admin/sms/topup/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: accessToken, intentId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
+          const credits = data.addedCredits ?? data.newBalanceCredits;
+          setToastMessage({
+            type: 'success',
+            text: data.message === 'Already processed'
+              ? 'This top-up was already credited to your SMS wallet.'
+              : `Payment confirmed. ${credits ? credits.toLocaleString() + ' SMS credits' : 'SMS credits'} added to your wallet.`
+          });
+          await fetchAdminData();
+          return;
+        }
+        // Still waiting on the mobile money PIN, or NaJiki is briefly unreachable: keep polling.
+        const pending = res.status === 400 && /not yet successful|Failed to verify/i.test(String(data.error || ''));
+        if (!pending) {
+          setToastMessage({ type: 'error', text: data.error || 'The top-up could not be confirmed.' });
+          return;
+        }
+      } catch {
+        // Network blip: keep polling.
+      }
+    }
+    setToastMessage({
+      type: 'error',
+      text: 'The top-up is not confirmed yet. If you paid, credits are added automatically once NaJiki confirms it.'
+    });
   };
 
 
@@ -690,43 +826,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
                   <p style={{ fontSize: 13, color: T.sub, marginTop: 8, lineHeight: 1.5 }}>
                     {pendingMembersList.length > 0 
-                      ? `${pendingMembersList.length} applicant${pendingMembersList.length > 1 ? 's' : ''} awaiting board review and account activation.`
+                      ? `${pendingMembersList.length} new member${pendingMembersList.length > 1 ? 's' : ''} have not paid the activation fee yet. They become active automatically when they pay.`
                       : "All member applications for this cooperative are verified and active."}
                   </p>
 
-                  {/* Top pending applicant preview */}
-                  {pendingMembersList.length > 0 && (
-                    <div style={{
-                      backgroundColor: '#FCFAEE', borderRadius: 16, padding: '14px 16px',
-                      border: `1px solid ${T.border}`, marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{ width: 36, height: 36, borderRadius: '50%', background: T.cMid, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 13 }}>
-                          {pendingMembersList[0].first_name?.charAt(0) || 'M'}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 800, color: T.text }}>
-                            {pendingMembersList[0].first_name} {pendingMembersList[0].last_name}
-                          </div>
-                          <div style={{ fontSize: 11, color: T.sub }}>
-                            Phone: {pendingMembersList[0].phone || 'N/A'} &bull; NIN: {pendingMembersList[0].national_id || 'Pending'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => handleMemberAction(pendingMembersList[0].id, 'approve')}
-                        disabled={processingMemberId === pendingMembersList[0].id}
-                        style={{
-                          padding: '6px 14px', borderRadius: 10,
-                          backgroundColor: T.green, color: 'white',
-                          border: 'none', fontWeight: 800, fontSize: 12, cursor: 'pointer'
-                        }}
-                      >
-                        {processingMemberId === pendingMembersList[0].id ? 'Approving...' : 'Approve'}
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
@@ -810,6 +913,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                 <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
                   Rate: {smsRate} UGX per alert
                 </div>
+                {smsLowBalance && (
+                  <div role="alert" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 10, backgroundColor: '#FEF2F2', color: '#B91C1C', fontSize: 12, fontWeight: 700 }}>
+                    Low SMS balance. Member SMS (welcome and receipts) will fail once it runs out. Top up now.
+                  </div>
+                )}
               </div>
 
             </div>
@@ -1148,10 +1256,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                   Cooperative Governance & Compliance
                 </span>
                 <h2 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, margin: '6px 0 0', color: 'white' }}>
-                  Member KYC & Account Approval Queue
+                  New Members Awaiting Activation
                 </h2>
                 <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', marginTop: 4, margin: 0, maxWidth: 540 }}>
-                  Review submitted applicant dossiers, verify National Identification Numbers (NIN), next-of-kin records, and authorize SACCO wallet creation.
+New members become active automatically when they pay the activation fee. Decline blocks an applicant, so a later payment will not activate them.
                 </p>
               </div>
 
@@ -1242,29 +1350,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                         >
                           Decline
                         </button>
-                        <button
-                          onClick={() => handleMemberAction(member.id, 'approve')}
-                          disabled={processingMemberId === member.id}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 6,
-                            padding: '9px 18px', borderRadius: 12,
-                            backgroundColor: T.green, border: 'none',
-                            color: 'white', fontWeight: 800, fontSize: 13, cursor: 'pointer',
-                            boxShadow: `0 4px 14px ${T.green}30`
-                          }}
-                        >
-                          {processingMemberId === member.id ? (
-                            <>
-                              <Loader2 size={16} className="animate-spin" />
-                              <span>Activating...</span>
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle2 size={16} />
-                              <span>Approve Member</span>
-                            </>
-                          )}
-                        </button>
                       </div>
                     </div>
 
@@ -1325,7 +1410,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                     Member Queue is Clear
                   </h3>
                   <p style={{ fontSize: 13, color: T.sub, margin: 0, maxWidth: 420 }}>
-                    All applicants for <strong>{saccoName}</strong> have been reviewed and approved. When new members sign up, they will appear here for board authorization.
+                    All applicants for <strong>{saccoName}</strong> have been reviewed. When new members sign up, they will appear here.
                   </p>
                 </div>
               )}
@@ -1416,7 +1501,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                       const balance = m.accounts?.reduce((sum: number, a: any) => sum + parseFloat(a.cached_balance || '0'), 0) || 0;
                       const isPending = m.status === 'pending' || m.status === 'pending_approval' || !m.status;
                       const isActive = m.status === 'active';
-                      const isSuspended = m.status === 'suspended';
 
                       return (
                         <tr key={m.id} style={{ borderBottom: `1px solid ${T.border}`, backgroundColor: idx % 2 === 0 ? 'white' : '#FCFAEE' }}>
@@ -1477,19 +1561,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                                 Dossier
                               </button>
 
-                              {isPending && (
-                                <button
-                                  onClick={() => handleMemberAction(m.id, 'approve')}
-                                  disabled={processingMemberId === m.id}
-                                  style={{
-                                    padding: '6px 12px', borderRadius: 8,
-                                    backgroundColor: T.green, border: 'none',
-                                    fontSize: 12, fontWeight: 800, color: 'white', cursor: 'pointer'
-                                  }}
-                                >
-                                  Approve
-                                </button>
-                              )}
 
                               {isActive && (
                                 <button
@@ -1505,19 +1576,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                                 </button>
                               )}
 
-                              {isSuspended && (
-                                <button
-                                  onClick={() => handleMemberAction(m.id, 'approve')}
-                                  disabled={processingMemberId === m.id}
-                                  style={{
-                                    padding: '6px 10px', borderRadius: 8,
-                                    backgroundColor: 'white', border: `1px solid ${T.border}`,
-                                    fontSize: 12, fontWeight: 700, color: T.green, cursor: 'pointer'
-                                  }}
-                                >
-                                  Reactivate
-                                </button>
-                              )}
                             </div>
                           </td>
                         </tr>
@@ -1856,6 +1914,34 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
               </p>
             </div>
 
+            <ProductsSettings orgId={orgId} onToast={setToastMessage} />
+
+            <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '20px 24px', border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <span style={{ fontSize: 10, color: T.ghost, textTransform: 'uppercase', fontWeight: 800 }}>Member Join Link</span>
+                <p style={{ fontSize: 13, color: T.sub, margin: '4px 0 0' }}>
+                  Send this link to members. Anyone who signs up with it joins your SACCO and waits for your approval.
+                  Regenerating it stops the old link from working. Members already registered are not affected.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <code style={{ flex: 1, minWidth: 240, padding: '10px 14px', borderRadius: 12, background: '#fff', border: `1px solid ${T.border}`, fontSize: 13, color: T.text, wordBreak: 'break-all' }}>
+                  {joinLink || (joinCodeBusy ? 'Loading…' : 'Not available')}
+                </code>
+                <button onClick={copyJoinLink} disabled={!joinLink || joinCodeBusy} style={{ padding: '10px 16px', borderRadius: 12, border: 'none', background: T.cMid, color: '#fff', fontWeight: 800, cursor: joinLink ? 'pointer' : 'not-allowed', opacity: joinLink ? 1 : 0.5 }}>
+                  Copy link
+                </button>
+                <button onClick={() => {
+                  if (window.confirm('Create a new join link? The current link will stop working immediately.')) {
+                    loadJoinCode('regenerate');
+                  }
+                }} disabled={!joinLink || joinCodeBusy} style={{ padding: '10px 16px', borderRadius: 12, border: `1px solid ${T.border}`, background: '#fff', color: T.text, fontWeight: 800, cursor: joinLink ? 'pointer' : 'not-allowed' }}>
+                  Regenerate
+                </button>
+              </div>
+              {joinCode && <span style={{ fontSize: 11, color: T.ghost }}>Join code: {joinCode}</span>}
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 18 }}>
               
               <div style={{ backgroundColor: '#FCFAEE', borderRadius: 16, padding: '16px 20px', border: `1px solid ${T.border}` }}>
@@ -1887,7 +1973,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                 <input
                   type="text"
                   readOnly
-                  value={apiKey || ""}
+                  value={apiKey || (apiKeySet ? "•••••••• key is set (hidden) — rotate to issue a new one" : "No API key yet — rotate to issue one")}
                   style={{
                     flex: 1, padding: '12px 16px', borderRadius: 12,
                     backgroundColor: 'white', border: `1px solid ${T.border}`,
@@ -1895,6 +1981,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                   }}
                 />
                 <button
+                  disabled={!apiKey}
                   onClick={() => {
                     navigator.clipboard.writeText(apiKey || "");
                     setToastMessage({ type: 'success', text: 'API Key copied to clipboard!' });
@@ -1906,6 +1993,18 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                   }}
                 >
                   Copy Key
+                </button>
+                <button
+                  onClick={rotateApiKey}
+                  disabled={rotatingKey}
+                  style={{
+                    padding: '12px 18px', borderRadius: 12,
+                    backgroundColor: 'white', color: T.cDeep,
+                    border: `1px solid ${T.border}`, fontWeight: 800, fontSize: 13,
+                    cursor: rotatingKey ? 'wait' : 'pointer'
+                  }}
+                >
+                  {rotatingKey ? 'Rotating…' : (apiKeySet ? 'Rotate Key' : 'Issue Key')}
                 </button>
               </div>
               <p style={{ fontSize: 11, color: T.ghost, marginTop: 8, margin: 0 }}>
@@ -1998,19 +2097,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
               {/* Action Buttons in Modal */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 8 }}>
-                {selectedMemberModal.status !== 'active' ? (
-                  <button
-                    onClick={() => handleMemberAction(selectedMemberModal.id, 'approve')}
-                    disabled={processingMemberId === selectedMemberModal.id}
-                    style={{
-                      padding: '12px', borderRadius: 14,
-                      backgroundColor: T.green, color: 'white',
-                      border: 'none', fontWeight: 800, fontSize: 13, cursor: 'pointer'
-                    }}
-                  >
-                    {processingMemberId === selectedMemberModal.id ? 'Approving...' : 'Approve & Activate'}
-                  </button>
-                ) : (
+                {selectedMemberModal.status === 'active' && (
                   <button
                     onClick={() => handleMemberAction(selectedMemberModal.id, 'suspend')}
                     disabled={processingMemberId === selectedMemberModal.id}
