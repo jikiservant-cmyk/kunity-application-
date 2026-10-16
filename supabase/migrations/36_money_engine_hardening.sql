@@ -285,14 +285,31 @@ $function$;
 -- Normalize wrapped NaJiki payloads before the existing atomic ledger function
 -- checks currency. The legacy function remains the sole writer; direct client
 -- execution of the renamed implementation is revoked.
-ALTER FUNCTION kunity.process_najiki_webhook(text, text, numeric, text, text, jsonb, numeric)
-  RENAME TO process_najiki_webhook_pre_currency_hardening;
+--
+-- Re-runnable: the rename only happens the first time. On a later run the
+-- pre-hardening implementation already exists, the rename is skipped, and the
+-- wrapper below is replaced in place.
+DO $mig36_rename$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'kunity'
+      AND p.proname = 'process_najiki_webhook_pre_currency_hardening'
+  ) THEN
+    ALTER FUNCTION kunity.process_najiki_webhook(text, text, numeric, text, text, jsonb, numeric)
+      RENAME TO process_najiki_webhook_pre_currency_hardening;
+  END IF;
+END;
+$mig36_rename$;
+
 REVOKE ALL ON FUNCTION kunity.process_najiki_webhook_pre_currency_hardening(text, text, numeric, text, text, jsonb, numeric)
   FROM PUBLIC, anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION kunity.process_najiki_webhook_pre_currency_hardening(text, text, numeric, text, text, jsonb, numeric)
   TO postgres;
 
-CREATE FUNCTION kunity.process_najiki_webhook(
+CREATE OR REPLACE FUNCTION kunity.process_najiki_webhook(
   p_reference text,
   p_status text,
   p_amount numeric,

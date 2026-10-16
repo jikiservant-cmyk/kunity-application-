@@ -95,6 +95,31 @@ Exit code is non-zero if any check fails, so it can be wired into CI.
 
 ---
 
+## Migration re-apply (idempotency) suite
+
+Answers an operational question rather than a product one: *can the migration folder be applied
+twice?* Applies migrations `21`+ to a real PostgreSQL engine (PGlite) two times and fails if the
+second pass breaks anything the first pass survived — the class of bug that fires when a deploy
+pipeline retries, an operator re-runs the SQL, or a fresh environment is provisioned from the same
+folder.
+
+```bash
+node test/migrations-reapply-tests.mjs   # expected: 8/8 checks passed
+```
+
+It also asserts the hardened objects survive the double apply: the 4-arg and rolling 3-arg
+`refund_sms_wallet` signatures, `wallet_transactions.sms_refund_debit_id`, the currency-normalizing
+`kunity.process_najiki_webhook` wrapper delegating to
+`process_najiki_webhook_pre_currency_hardening`, and the migration-33 payment-request/member
+composite foreign key.
+
+Migrations `23`, `29` and `31` cannot run on the minimal pentest harness because it deliberately
+omits `public.admin_profiles`, the `auth` schema and `public.applications`. They are listed in
+`HARNESS_BASELINE` inside the suite and are checked for *unchanged* failures across both passes,
+not for success; judge them against a real Supabase project.
+
+---
+
 ## Money-engine security checks
 
 These target the SMS wallet and NaJiki money paths and complement the broader

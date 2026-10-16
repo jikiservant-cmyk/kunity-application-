@@ -238,7 +238,13 @@ export default function AdminOverview({
       </section>
 
       {smsLowBalance && (
-        <button className={styles.lowBalanceNotice} onClick={() => onNavigate('sms')}>
+        <button
+          type="button"
+          role="alert"
+          aria-label="Low SMS balance: top up to keep member updates flowing"
+          className={styles.lowBalanceNotice}
+          onClick={() => onNavigate('sms')}
+        >
           <span className={styles.noticeIcon}><AlertCircle size={17} /></span>
           <span><strong>SMS credits are running low.</strong> Top up to keep member updates flowing.</span>
           <ArrowRight size={16} />
