@@ -120,6 +120,27 @@ not for success; judge them against a real Supabase project.
 
 ---
 
+## Deployment health probe
+
+`app/api/health/route.ts` answers "is this deployment actually wired up?" in one request.
+It exists because every Supabase client in the app falls back to
+`https://demo-placeholder.supabase.co` when its env vars are missing, so a half-configured
+production deployment boots normally, serves the login page, and only fails when someone
+tries to sign in.
+
+```bash
+node_modules/.bin/tsx test/health-probe-tests.mjs   # expected: 11 passed
+curl -s https://<your-origin>/api/health            # 200 ok / 503 degraded / 503 not_ready
+```
+
+The probe returns presence **booleans only** — never a secret value, prefix or hash — and
+names the misconfigurations that matter at launch (placeholder credentials, missing
+service-role key, missing `NAJIKI_WEBHOOK_SECRET`, webhook secret equal to the API key,
+in-memory rate limiting, missing Inngest key, missing `APP_URL`). The suite asserts that no
+sentinel secret leaks into the body in any state.
+
+---
+
 ## Money-engine security checks
 
 These target the SMS wallet and NaJiki money paths and complement the broader

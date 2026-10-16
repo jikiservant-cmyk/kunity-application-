@@ -249,6 +249,10 @@ const server = http.createServer(async (req, res) => {
       requestLog.push({ method: 'AUTH_ADMIN_UPDATE_USER', path, body });
       return json(res, 200, { id: path.split('/').pop(), ...body });
     }
+    if (path === '/auth/v1/health' && method === 'GET') {
+      // Faithful to a real Supabase project: the auth health endpoint answers 200.
+      return json(res, 200, { version: 'mock-gotrue', name: 'GoTrue', description: 'mock' });
+    }
     if (path.startsWith('/auth/v1/')) {
       return json(res, 404, { message: 'not implemented in mock' });
     }

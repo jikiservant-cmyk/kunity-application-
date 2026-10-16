@@ -21,8 +21,10 @@ export const config = {
      * - api/organizations (public signup dropdown: id + name of ACTIVE orgs only.
      *   Must stay reachable pre-login — the middleware redirects cookieless
      *   requests to /auth, which would break the signup SACCO selector.)
+     * - api/health (deployment/configuration probe: must answer without a session
+     *   and without spending a Supabase getUser() round trip on every uptime check)
      * Feel free to modify this pattern to include more paths.
      */
-    "/((?!_next/static|_next/image|favicon.ico|api/auth/profile|api/webhooks|api/internal|api/organizations|api/messaging|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth/profile|api/webhooks|api/internal|api/organizations|api/health|api/messaging|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

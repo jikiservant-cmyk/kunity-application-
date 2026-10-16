@@ -39,13 +39,14 @@ last section and they take about 15 minutes to close.
 | Tenant isolation / RLS / join codes / activation / products / registration guards | `node test/{rls,join-code,member-activation,products,product-rules,registration-guard,activation-guard,unlock-trigger,migrations-30-31}-tests.mjs` | 20/20, 13/13, 12/12, 23/23, 17/17, 10/10, 8/8, 10/10, 3/3 |
 | 2026-10-13 pentest regressions | `tsx test/pentest-2026-10-13-tests.mjs` | 24/24 |
 | Migration re-apply safety (**new today**) | `node test/migrations-reapply-tests.mjs` | 8/8 |
+| Deployment health probe (**new today**) | `tsx test/health-probe-tests.mjs` | 11/11 — no secret ever appears in the response |
 | Live surface attack probe (real server, mock backend) | `BASE_URL=http://127.0.0.1:3000 node test/live-surface-pentest-tests.mjs` | 10/10 — unsigned NaJiki callbacks, forged SMS-failure refunds, cookieless admin/member calls, retired routes all refused |
 | Lint | `npm run lint` | clean |
 | Type check | `npx tsc --noEmit` | clean |
-| Production build | `npm run build` | compiled, 34/34 static pages, 27 routes + proxy middleware |
+| Production build | `npm run build` | compiled, 34/34 static pages, 28 routes (incl. `/api/health`) + proxy middleware |
 | Production server | `PORT=3005 npm start` | boots, `/auth` 200, `/admin` + `/member` 307 → `/auth`, security headers present, live surface probe 10/10 |
 
-**Total: 372 checks across 24 suites, all passing.**
+**Total: 373 checks across 24 suites, all passing.**
 
 Two suites could not be run in this environment and their earlier results are **repo-reported, not
 reproduced today**:
@@ -110,9 +111,63 @@ passes with `.next/` absent.
 
 ---
 
+### R-04 — Nothing told you whether the deployment was actually configured
+
+**Severity:** highest operational risk found; it is the difference between a quiet
+successful launch and a launch morning spent debugging a login screen.
+
+Every Supabase client in the app falls back to a placeholder when its environment
+variables are missing:
+
+- `lib/supabase.ts`, `lib/supabase-server.ts`, `lib/supabase-middleware.ts` →
+  `https://demo-placeholder.supabase.co` / `placeholder-key`
+- `app/api/webhooks/najiki/route.ts` → `http://localhost:54321` / `dummy-key`
+
+Consequence: a production deployment missing `NEXT_PUBLIC_SUPABASE_URL` (or with the
+`.env.example` stubs left in place — `YOUR_SUPABASE_URL_HERE`) **boots normally, serves
+the login page, returns HTTP 200 everywhere, and then fails obscurely at the moment a
+real person tries to sign in.** There was no health endpoint, no startup check, and the
+one component that showed setup instructions (`components/SetupRequired.tsx`) is dead
+code — it is never imported or rendered anywhere.
+
+Demonstrated during this review: with `.env.local` absent the app came up and served
+`/auth` normally; nothing indicated the environment was empty except the eventual login
+failure.
+
+**Fix:** new `GET /api/health` route (`app/api/health/route.ts`).
+
+- Reports presence **booleans only** — never a secret value, prefix, length or hash.
+- Distinguishes `ok` (200) / `degraded` (503, Supabase unreachable) / `not_ready` (503,
+  critical config missing), so an uptime monitor can alert on the status code directly.
+- Names the specific misconfigurations that matter at launch: placeholder in use,
+  missing service-role key, missing `NAJIKI_WEBHOOK_SECRET`, **webhook secret equal to the
+  API key** (the legacy fallback), a webhook secret that is really an `nk_` API key,
+  non-NaJiki provider, in-memory rate limiting, `ENFORCE_REDIS_RATELIMIT` off, missing
+  Inngest key, missing `APP_URL`.
+- Treats the `.env.example` stub values as *not configured*.
+- Reaches Supabase with a single shallow `GET /auth/v1/health` (4 s timeout).
+- Excluded from the proxy middleware matcher in `proxy.ts` so it answers without a
+  session and without spending a Supabase `getUser()` round trip per uptime check.
+- `test/mock-supabase.js` now answers `/auth/v1/health` like real Supabase, so the mock
+  stops reporting a false outage.
+
+**Regression test added:** `test/health-probe-tests.mjs` (11 checks) asserts the
+not-ready path, the stub-value path, the healthy path, the degraded path, each warning,
+and — explicitly — that no sentinel secret leaks into the response body under any state.
+
+**Still open (deliberate, not changed today):** `components/SetupRequired.tsx` remains
+dead code. Wiring it into the root layout would turn a misconfigured deployment into a
+self-explaining screen instead of a broken login. That is a product decision and a
+user-visible change, so it was left alone the day before launch — the health endpoint
+covers the operational need.
+
+---
+
 ## 3. Go-live gates — verify these before taking real money
 
-These are environment facts, not code facts. None can be checked from this repository.
+These are environment facts, not code facts. Most can now be checked from one URL —
+**`GET https://<your-origin>/api/health`** — instead of the Supabase/NaJiki dashboards.
+`status: "ok"` with an empty `warnings` array means gates 1–7 below are satisfied.
 
 | # | Gate | How to verify |
 | --- | --- | --- |
@@ -144,7 +199,7 @@ sequence the code is hardened against and the one thing automated tests cannot c
 ## 5. Recommended in the first 24 hours
 
 1. Take a Supabase backup/snapshot before the first real transaction, and confirm PITR is enabled.
-2. Put an external uptime check on `https://<origin>/api/webhooks/najiki` (an unsigned POST should return 4xx, not 5xx/timeout) — that is the endpoint the money flows through.
+2. Put an external uptime check on `GET https://<origin>/api/health` (it returns 200 when healthy and 503 when not), and alert on `status != "ok"` or a non-empty `warnings` array. That single check covers Supabase reachability, the service-role key, the NaJiki credentials and the rate-limit backend.
 3. Add a CI job running `npm run lint`, `npx tsc --noEmit` and the PGlite suites on every push; today the only workflow is secret scanning, so a bad hotfix tomorrow would reach production unverified.
 4. Reconcile once after go-live: per org, `sacco_wallets.balance` against the net cash movement in `journal_lines`, to catch any pre-migration-21 imbalance.
 5. Keep `test/migrations-reapply-tests.mjs` in the deploy checklist — it is the guard against a re-applied migration folder breaking a late-night deploy.
