@@ -194,7 +194,7 @@ node_modules/.bin/tsx test/money-engine-webhook-adversarial-tests.mjs
 
 # Admin SMS purchase against a simulator transcribed from the real NaJiki
 # source (create-payment rules, webhook envelope, status endpoint).
-# Expected: 29 checks passed.
+# Expected: 31 checks passed.
 node_modules/.bin/tsx test/sms-purchase-najiki-live-contract-tests.mjs
 
 # Penetration test of the SMS purchase path: forged/replayed webhooks,
@@ -203,8 +203,10 @@ node_modules/.bin/tsx test/sms-purchase-najiki-live-contract-tests.mjs
 node_modules/.bin/tsx test/sms-purchase-pentest-tests.mjs
 ```
 
-Both SMS purchase suites share `lib/sms-purchase-harness.mjs` (PGlite +
-migrations 21–37, NaJiki simulator, Supabase REST/RPC stand-in). See
+All three SMS purchase suites share `lib/sms-purchase-harness.mjs` (PGlite +
+migrations 21–37, NaJiki simulator, Supabase REST/RPC stand-in). The simulator
+also models the hardened NaJiki contract (fail-closed payment types) from the
+patch in `../docs/security/najiki-buy-sms-hardening.patch`. See
 `../docs/security/sms-purchase-najiki-verification-2026-10-17.md` and
 `../docs/security/sms-purchase-pentest-2026-10-17.md`.
 

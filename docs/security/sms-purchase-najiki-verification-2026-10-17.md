@@ -92,10 +92,37 @@ notifications are rejected; a callback that races the create response is
 credited through `metadata.reference`; and the SQL function rejects amount
 mismatches and debit rows while staying idempotent.
 
+Two additional guards are proven (suite now 31 checks):
+
+* On a **pre-hardening** NaJiki that accepts `BUY_SMS` as a tenant collection
+  (tenant credentials configured, no `BUY_SMS` type), the top-up route queries
+  the status endpoint, sees `paymentType: null`, and refuses with 502 — the
+  operator is told to register `BUY_SMS`, and that an approved prompt still
+  credits via the webhook. The paid-money-can't-strand property is tested.
+* Against the **hardened** NaJiki contract (strict payment types), an
+  unregistered `BUY_SMS` is rejected by NaJiki itself with 400 before any money
+  moves, and Kunity relays the operator-actionable error.
+
 All four server-priced packs are sent at their configured price:
 200 → 10,000, 500 → 25,000, 1,200 → 50,000, 3,000 → 100,000 UGX.
 
 ## Required NaJiki setup (blocking)
+
+**Preferred path:** apply the NaJiki hardening patch shipped in this repository
+at `docs/security/najiki-buy-sms-hardening.patch`
+(`najiki-finance2` branch content of `arena/016d07ac-buy-sms-hardening`, commit
+`d89c531`). It makes NaJiki fail closed on unregistered payment-type codes,
+registers `BUY_SMS` in `scripts/seed.ts`, and points the seeded sacco
+application's webhook path at `/api/webhooks/najiki`. Its test suite passes
+153/153. After a re-seed, fresh installations need **no** manual steps 1–2
+below; existing deployments still need them (or the equivalent SQL/admin
+update).
+
+```bash
+cd najiki-finance2 && git am < ../kunity-application-/docs/security/najiki-buy-sms-hardening.patch
+```
+
+**Manual steps on an unpatched NaJiki deployment:**
 
 1. **Add the payment type** for the `sacco` application (super-admin):
 

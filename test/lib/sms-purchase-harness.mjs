@@ -113,6 +113,11 @@ export async function createHarness(options = {}) {
     statusOverrides: new Map(),   // reference -> fields merged into the GET response
     deliveries: [],
     mode: 'normal',               // normal | callback_before_response
+    // Mirrors the hardened NaJiki branch (arena/016d07ac-buy-sms-hardening):
+    // an unregistered paymentTypeCode is rejected with 400 instead of silently
+    // booking the payment as a tenant collection. False reproduces the pinned
+    // deployed contract (@6d55d75).
+    strictPaymentTypes: false,
   };
 
   function najikiAddPaymentType(code) {
@@ -180,6 +185,18 @@ export async function createHarness(options = {}) {
     const paymentType = najiki.paymentTypes.find(
       (t) => t.applicationId === najiki.application.id && t.code === body.paymentTypeCode,
     ) || null;
+
+    // Hardened NaJiki (arena/016d07ac-buy-sms-hardening): the null resolution
+    // is itself an error — fail closed before any money moves.
+    if (najiki.strictPaymentTypes && body.paymentTypeCode && !paymentType) {
+      return {
+        status: 400,
+        body: {
+          error: `Unknown payment type "${body.paymentTypeCode}" for application ` +
+            `"${najiki.application.code}". Register it in Setup before collecting payments.`,
+        },
+      };
+    }
 
     const isPlatformPayment = Boolean(
       paymentType && PLATFORM_FEE_TYPES.includes(String(paymentType.code).toUpperCase()),
@@ -606,6 +623,7 @@ END $$;`);
     najiki.statusOverrides.clear();
     najiki.deliveries = [];
     najiki.mode = 'normal';
+    najiki.strictPaymentTypes = false;
     rpcLog.length = 0;
   }
   async function latestIntent() {

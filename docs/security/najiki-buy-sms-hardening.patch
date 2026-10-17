@@ -1,0 +1,215 @@
+From d89c5316a541074751832da62f9f2fbf95e5b711 Mon Sep 17 00:00:00 2001
+From: jikiservant-cmyk <253226408+jikiservant-cmyk@users.noreply.github.com>
+Date: Sat, 17 Oct 2026 21:04:34 +0000
+Subject: [PATCH] fix(billing): fail closed on unregistered payment-type codes;
+ seed BUY_SMS
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The create-payment route resolved an unknown paymentTypeCode to NULL and,
+because isPlatformPayment requires a resolved type, booked the payment as a
+TENANT collection. For Kunity's BUY_SMS code (a platform fee in
+PLATFORM_FEE_TYPES) that silently routed a platform fee into the tenant's
+provider float while the SMS credits were still granted — the exact
+mis-billing mode found in the Kunity-NaJiki contract review.
+
+- POST /api/payments now rejects a supplied-but-unregistered paymentTypeCode
+  with 400 and an operator-actionable message, decided by the pure
+  src/lib/payment-type-guard.ts helper.
+- scripts/seed.ts registers BUY_SMS for the sacco application, so a fresh
+  install bills SMS bundles through the platform account out of the box.
+- The seeded sacco application webhookPath now points at Kunity's real
+  notification listener (/api/webhooks/najiki); the previous placeholder path
+  exists in no Kunity deployment and would have dropped every notification.
+
+tests/payment-type-guard.test.ts covers the rejection, message contract, the
+registered-code and legacy (no-code) pass-throughs. npm test: 153 passed,
+0 failed. tsc reports no new errors (pre-existing data.ts drift is unchanged).
+---
+ scripts/seed.ts                  | 10 +++++-
+ src/app/api/payments/route.ts    | 19 ++++++++++
+ src/lib/payment-type-guard.ts    | 36 +++++++++++++++++++
+ tests/payment-type-guard.test.ts | 62 ++++++++++++++++++++++++++++++++
+ 4 files changed, 126 insertions(+), 1 deletion(-)
+ create mode 100644 src/lib/payment-type-guard.ts
+ create mode 100644 tests/payment-type-guard.test.ts
+
+diff --git a/scripts/seed.ts b/scripts/seed.ts
+index e35e1bf..afab959 100644
+--- a/scripts/seed.ts
++++ b/scripts/seed.ts
+@@ -61,7 +61,9 @@ async function seed() {
+   // === APPLICATIONS ===
+   const saccoApiKey = credentials()
+   const sacco = await db.application.create({
+-    data: { code: 'sacco', name: 'SACCO Platform', baseUrl: 'https://sacco.yourdomain.com', webhookPath: '/api/internal/payment-completed', internalSecretRef: 'SACCO_INTERNAL_SECRET', ...saccoApiKey.data, isActive: true },
++    // The sacco application IS Kunity. Payment notifications must land on
++    // Kunity's real NaJiki listener, not the placeholder internal path.
++    data: { code: 'sacco', name: 'SACCO Platform', baseUrl: 'https://sacco.yourdomain.com', webhookPath: '/api/webhooks/najiki', internalSecretRef: 'SACCO_INTERNAL_SECRET', ...saccoApiKey.data, isActive: true },
+   })
+   
+   const churchApiKey = credentials()
+@@ -97,6 +99,12 @@ async function seed() {
+   const saccoDeposit = await db.paymentType.create({ data: { applicationId: sacco.id, code: 'deposit', description: 'Member savings deposit' } })
+   const saccoLoan = await db.paymentType.create({ data: { applicationId: sacco.id, code: 'loan_repayment', description: 'Loan repayment' } })
+   const saccoActivation = await db.paymentType.create({ data: { applicationId: sacco.id, code: 'account_activation', description: 'Account activation fee' } })
++  // Kunity's admin console buys SMS bundles with this code. BUY_SMS is a
++  // platform fee (PLATFORM_FEE_TYPES), so it settles through the PLATFORM's
++  // provider account and needs no per-tenant credentials. Seeding it here keeps
++  // a fresh install working out of the box — the create-payment route now
++  // rejects unregistered codes fail-closed.
++  await db.paymentType.create({ data: { applicationId: sacco.id, code: 'BUY_SMS', description: 'SMS credits top-up (platform fee)' } })
+   const churchTithe = await db.paymentType.create({ data: { applicationId: church.id, code: 'tithe', description: 'Tithe payment' } })
+   const churchOffering = await db.paymentType.create({ data: { applicationId: church.id, code: 'offering', description: 'General offering' } })
+   const schoolTuition = await db.paymentType.create({ data: { applicationId: school.id, code: 'tuition', description: 'Tuition fee' } })
+diff --git a/src/app/api/payments/route.ts b/src/app/api/payments/route.ts
+index cbeb4e2..3a8f674 100644
+--- a/src/app/api/payments/route.ts
++++ b/src/app/api/payments/route.ts
+@@ -26,6 +26,7 @@ import { processPayment, findActiveTenantCredentials } from '@/lib/payments'
+ import { PLATFORM_FEE_TYPES, appRequiresTenantCredentials } from '@/lib/constants'
+ import { checkRateLimit, clientIdentifier } from '@/lib/rate-limit'
+ import { findApplicationByApiKey } from '@/lib/application-auth'
++import { rejectUnregisteredPaymentType } from '@/lib/payment-type-guard'
+ 
+ // crypto-random reference — replaces Date.now().slice(-6)+Math.random()*10000
+ // which had collision probability under burst load (same millisecond = same prefix)
+@@ -196,6 +197,24 @@ export async function POST(request: Request) {
+       return NextResponse.json({ error: 'Invalid or inactive tenant' }, { status: 404 })
+     }
+ 
++    // BILLING: a paymentTypeCode that does not resolve must fail closed. Before
++    // this guard, an unknown code silently left paymentTypeId null, which flipped
++    // isPlatformPayment off and booked the money as a TENANT collection — for
++    // Kunity's BUY_SMS that routed a platform fee into the tenant's provider
++    // float while the credits were still granted. Refuse before any money moves.
++    const paymentTypeGuard = rejectUnregisteredPaymentType(
++      application.code,
++      validatedBody.paymentTypeCode,
++      paymentType,
++    )
++    if (!paymentTypeGuard.ok) {
++      console.error(
++        `[payments] Rejected unregistered payment type ` +
++        `"${validatedBody.paymentTypeCode}" for application "${application.code}"`,
++      )
++      return NextResponse.json({ error: paymentTypeGuard.error }, { status: 400 })
++    }
++
+     // Prefer tenant's default provider, UNLESS it's a platform payment
+     const isPlatformPayment =
+       paymentType && PLATFORM_FEE_TYPES.includes(String(paymentType.code).toUpperCase())
+diff --git a/src/lib/payment-type-guard.ts b/src/lib/payment-type-guard.ts
+new file mode 100644
+index 0000000..ef4d3f3
+--- /dev/null
++++ b/src/lib/payment-type-guard.ts
+@@ -0,0 +1,36 @@
++/**
++ * Fail-closed payment-type resolution — pure decision logic, unit-tested
++ * without a database in tests/payment-type-guard.test.ts.
++ *
++ * Why this exists: the create-payment route used to resolve a paymentTypeCode
++ * to NULL when no paymentType row matched, and then booked the payment as a
++ * TENANT collection (isPlatformPayment = false). For Kunity's BUY_SMS code that
++ * silently routed a PLATFORM FEE into the tenant's provider float — the money
++ * settled with the tenant, the SMS credits were still granted, and nobody was
++ * alerted. An unregistered code is a configuration error and must be refused,
++ * loudly, before any money moves.
++ */
++
++/** The operator-facing message; must say what is wrong AND where to fix it. */
++export function unregisteredPaymentTypeError(applicationCode: string, paymentTypeCode: string): string {
++  return (
++    `Unknown payment type "${paymentTypeCode}" for application "${applicationCode}". ` +
++    'Register it in Setup before collecting payments.'
++  )
++}
++
++/**
++ * Returns { ok: true } when the request may proceed:
++ *   - no paymentTypeCode was supplied (legacy callers), or
++ *   - the supplied code resolved to a real paymentType row.
++ * Returns { ok: false, error } when a supplied code resolved to nothing.
++ */
++export function rejectUnregisteredPaymentType(
++  applicationCode: string,
++  paymentTypeCode: string | undefined | null,
++  resolvedPaymentType: { id?: string | null } | null | undefined,
++): { ok: true } | { ok: false; error: string } {
++  if (!paymentTypeCode) return { ok: true }
++  if (resolvedPaymentType?.id) return { ok: true }
++  return { ok: false, error: unregisteredPaymentTypeError(applicationCode, paymentTypeCode) }
++}
+diff --git a/tests/payment-type-guard.test.ts b/tests/payment-type-guard.test.ts
+new file mode 100644
+index 0000000..db2d7ad
+--- /dev/null
++++ b/tests/payment-type-guard.test.ts
+@@ -0,0 +1,62 @@
++/**
++ * Unit tests for the fail-closed payment-type guard.
++ *
++ * The guard backs the create-payment route's refusal to book a payment when
++ * the requested paymentTypeCode is not registered for the application. Before
++ * the guard, an unknown code silently left paymentTypeId null and the payment
++ * was booked as a TENANT collection — for Kunity's BUY_SMS that routed a
++ * platform fee into the tenant's provider float.
++ *
++ *   npm test
++ */
++
++import { test } from 'node:test'
++import assert from 'node:assert/strict'
++
++import {
++  rejectUnregisteredPaymentType,
++  unregisteredPaymentTypeError,
++} from '../src/lib/payment-type-guard.ts'
++
++// ─── resolution outcomes ─────────────────────────────────────────────────────
++
++test('an unregistered paymentTypeCode is rejected', () => {
++  const result = rejectUnregisteredPaymentType('sacco', 'BUY_SMS', null)
++  assert.equal(result.ok, false)
++})
++
++test('the rejection names the code, the application, and where to fix it', () => {
++  const result = rejectUnregisteredPaymentType('sacco', 'BUY_SMS', null)
++  assert.ok(!result.ok)
++  assert.match(result.error, /BUY_SMS/)
++  assert.match(result.error, /sacco/)
++  assert.match(result.error, /register it in setup/i)
++})
++
++test('a registered paymentTypeCode passes', () => {
++  const result = rejectUnregisteredPaymentType('sacco', 'deposit', { id: 'pt-1' })
++  assert.deepEqual(result, { ok: true })
++})
++
++test('a registered BUY_SMS passes and stays a platform fee downstream', () => {
++  const result = rejectUnregisteredPaymentType('sacco', 'BUY_SMS', { id: 'pt-buy-sms' })
++  assert.deepEqual(result, { ok: true })
++})
++
++test('no paymentTypeCode supplied is not the guard\'s concern (legacy callers)', () => {
++  assert.deepEqual(rejectUnregisteredPaymentType('sacco', undefined, null), { ok: true })
++  assert.deepEqual(rejectUnregisteredPaymentType('sacco', null, null), { ok: true })
++})
++
++test('an empty-string code behaves like an unregistered code lookup result', () => {
++  // The route only looks up non-empty codes; an empty string reaches the guard
++  // as "not supplied".
++  assert.deepEqual(rejectUnregisteredPaymentType('sacco', '', null), { ok: true })
++})
++
++test('the message format is stable for operator tooling', () => {
++  assert.equal(
++    unregisteredPaymentTypeError('sacco', 'BUY_SMS'),
++    'Unknown payment type "BUY_SMS" for application "sacco". Register it in Setup before collecting payments.',
++  )
++})
+-- 
+2.39.5
+

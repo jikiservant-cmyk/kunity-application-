@@ -72,18 +72,55 @@ await check('the NaJiki API key is presented as a Bearer token, never in the bod
 });
 
 // ── 1b. The dangerous variant: the SACCO has tenant credentials ─────────────
-console.log('\nUnseeded BUY_SMS with tenant credentials configured');
+console.log('\nUnseeded BUY_SMS with tenant credentials configured (pre-hardening NaJiki)');
 najiki.tenantCredentials.set(NJ_TENANT_ID, [{ providerId: PROVIDER_ID }]);
 await resetDatabase();
-await check('the payment is accepted, but as a TENANT collection — not a platform fee', async () => {
+await check('a misclassified purchase is refused loudly — not lost as a silent tenant collection', async () => {
+  // NaJiki (@6d55d75) accepts the payment with paymentTypeId null — tenant money.
+  // Kunity detects that classification via the status endpoint and refuses.
   const response = await callTopup();
-  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.status, 502, JSON.stringify(response.body));
+  assert.match(response.body.error, /TENANT collection/i);
+  assert.match(response.body.error, /BUY_SMS/, 'the operator must be told what to register');
+  assert.match(response.body.error, /credits will still arrive/i, 'a paid prompt still credits via the webhook');
   const intent = await latestIntent();
   assert.equal(intent.paymentTypeId, null, 'NaJiki cannot attach a payment type it does not have');
   assert.equal(intent.isPlatformPayment, false, 'an unknown code is treated as tenant money');
   assert.equal(intent.tenantId, NJ_TENANT_ID);
+  assert.equal(Number((await wallet()).balance), 0, 'nothing is credited for a refused purchase');
+  const rows = await ledger();
+  assert.equal(rows.length, 1, 'the pending row remains for reconciliation if the payer approved');
+  assert.equal(rows[0].note, 'pending');
+});
+await check('if the misclassified prompt was approved anyway, the webhook still credits', async () => {
+  // Defense in depth: the purchase route refused, but the paid money must never
+  // strand — the webhook path credits from metadata, independent of NaJiki's
+  // classification.
+  const result = await deliverNajikiWebhook(await latestIntent(), 'success');
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(Number((await wallet()).balance), 10000);
+  assert.equal((await ledger())[0].note, 'success');
 });
 najiki.tenantCredentials.clear();
+await resetDatabase();
+
+// ── 1c. Hardened NaJiki: an unregistered code is rejected outright ───────────
+console.log('\nHardened NaJiki (fail-closed payment types)');
+await resetDatabase();
+najiki.strictPaymentTypes = true;
+await check('an unregistered BUY_SMS is rejected by NaJiki before any money moves', async () => {
+  const response = await callTopup();
+  assert.equal(response.status, 502, JSON.stringify(response.body));
+  assert.match(response.body.error, /Unknown payment type "BUY_SMS"/i);
+  assert.match(response.body.error, /Register it in Setup/i);
+  assert.equal(najiki.createCalls.length, 1, 'exactly one create call was attempted');
+  assert.equal([...najiki.intents.values()].length, 0, 'no intent was created');
+  assert.equal(Number((await wallet()).balance), 0);
+  const rows = await ledger();
+  assert.equal(rows.length, 1, 'only the pre-written pending row exists');
+  assert.equal(rows[0].note, 'pending');
+});
+najiki.strictPaymentTypes = false;
 await resetDatabase();
 
 // ── 2. With BUY_SMS configured: the full purchase works ──────────────────────
