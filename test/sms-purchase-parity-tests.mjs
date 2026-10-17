@@ -57,9 +57,46 @@ check('bulk bundles never cost more per credit than the smaller ones', () => {
 });
 
 // ── 2. The admin checkout uses the member portal's visual language ───────────
-check('the admin checkout uses the member cream sheet palette', () => {
-  for (const token of ["sheet:   '#F3E8D5'", "field:   '#FCFAEE'", "button:  '#2B1A11'", "accent:  '#A76C47'"]) {
-    assert.ok(admin.includes(token), `missing palette token ${token}`);
+// The sheet is a literal copy of the member deposit sheet, so the design is
+// asserted against the exact values in app/member/page.tsx — not approximations.
+const DEPOSIT_SHEET = member.slice(
+  member.indexOf("activeModal === 'deposit' || activeModal === 'withdraw'"),
+  member.indexOf('</form>', member.indexOf("activeModal === 'deposit' || activeModal === 'withdraw'"))
+);
+const ADMIN_SHEET = admin.slice(
+  admin.indexOf('SHEET: MOBILE MONEY SMS CHECKOUT'),
+  admin.indexOf('</form>', admin.indexOf('SHEET: MOBILE MONEY SMS CHECKOUT'))
+);
+// The 2x2 tile style is shared by the tab card and the sheet, so it lives in a
+// module-scope helper rather than inline. Its values are still the member sheet's.
+const ADMIN_TILE_HELPER = admin.slice(
+  admin.indexOf('const bundleButtonStyle'),
+  admin.indexOf('export default function AdminConsole')
+);
+const ADMIN_DESIGN = ADMIN_SHEET + ADMIN_TILE_HELPER;
+
+check('the admin sheet carries the member deposit sheet colours verbatim', () => {
+  for (const colour of ['#F3E8D5', '#EAE0CC', '#A76C47', '#3A271C', '#887563', '#FCFAEE', '#A5927D', '#2B1A11', '#FCFAEE']) {
+    assert.ok(DEPOSIT_SHEET.includes(colour), `member sheet no longer has ${colour}`);
+    assert.ok(ADMIN_SHEET.includes(colour), `admin sheet is missing ${colour}`);
+  }
+});
+
+check('the admin sheet carries the member deposit sheet metrics verbatim', () => {
+  for (const metric of [
+    'maxWidth: 400',
+    'borderTopLeftRadius: 36',
+    'padding: \'36px 28px 24px\'',
+    "boxShadow: '0 -10px 40px rgba(0,0,0,0.2)'",
+    'height: 54',
+    'height: 48',
+    'borderRadius: 12',
+    'height: 56',
+    'borderRadius: 16',
+    "letterSpacing: '0.05em'",
+  ]) {
+    assert.ok(DEPOSIT_SHEET.includes(metric.replace(/\\'/g, "'")), `member sheet no longer has ${metric}`);
+    assert.ok(ADMIN_DESIGN.includes(metric.replace(/\\'/g, "'")), `admin sheet is missing ${metric}`);
   }
 });
 
@@ -75,10 +112,24 @@ check('the old gradient-header checkout modal is gone', () => {
 });
 
 check('the sheet has the member field-with-icon, bundle grid and dark confirm button', () => {
-  assert.match(admin, /<Phone size=\{18\} color=\{MOMO\.muted\} \/>/);
-  assert.match(admin, /gridTemplateColumns:\s*'1fr 1fr'/);
-  assert.match(admin, /CONFIRM &amp; PAY/);
-  assert.match(admin, /You will receive a PIN prompt on your phone\./);
+  assert.match(ADMIN_SHEET, /<Phone size=\{18\} color="#A5927D" \/>/);
+  assert.match(ADMIN_SHEET, /gridTemplateColumns: '1fr 1fr', gap: 10/);
+  assert.match(ADMIN_SHEET, /\{isProcessingBuy \? 'PROCESSING\.\.\.' : 'CONFIRM & PAY'\} <CheckCircle2 size=\{16\} \/>/);
+  assert.match(ADMIN_SHEET, /You will receive a PIN prompt on your phone\./);
+  assert.match(ADMIN_SHEET, />\s*CANCEL\s*</);
+});
+
+check('the admin sheet uses the same tile, heading and info-line structure as the member sheet', () => {
+  for (const shared of [
+    '<CreditCard size={22} color="#A76C47" />',
+    'borderTopLeftRadius: 36',
+    "fontFamily: 'serif'",
+    'textAlign: \'center\', fontSize: 11, color: \'#A5927D\'',
+  ]) {
+    const needle = shared.replace(/\\'/g, "'");
+    assert.ok(DEPOSIT_SHEET.includes(needle), `member sheet no longer has ${needle}`);
+    assert.ok(ADMIN_SHEET.includes(needle), `admin sheet is missing ${needle}`);
+  }
 });
 
 // ── 3. Same immersive overlay journey, same copy ─────────────────────────────
@@ -140,9 +191,11 @@ check('polling still confirms idempotently and stops on a terminal answer', () =
   assert.match(admin, /not yet successful\|Failed to verify/);
 });
 
-check('the admin sheet closes on backdrop click and blocks closing while sending', () => {
+check('the admin sheet submits through a form and blocks closing while sending', () => {
+  assert.match(ADMIN_SHEET, /<form/);
+  assert.match(ADMIN_SHEET, /type="submit"/);
   assert.match(admin, /const closeBuySheet = \(\) => \{\s*if \(isProcessingBuy\) return;/);
-  assert.match(admin, /onClick=\{closeBuySheet\}/);
+  assert.match(ADMIN_SHEET, /onClick=\{closeBuySheet\}/);
 });
 
 const failed = results.filter((r) => !r.pass);

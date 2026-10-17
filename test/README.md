@@ -122,12 +122,15 @@ not for success; judge them against a real Supabase project.
 
 ## SMS purchase parity (admin ↔ member)
 
-The admin SMS checkout mirrors the member portal purchase experience: cream bottom
-sheet, phone field with icon, selectable bundle grid, dark CONFIRM & PAY button, then
-the immersive pending → success → failed PIN overlay. These checks stop the two flows
-drifting apart and — critically — stop the displayed bundle prices drifting from the
-server price list in `lib/sms-packs.ts` (the API re-derives the price from the credit
-count, so a mismatch would show one price and charge another).
+The admin SMS checkout is a value-for-value copy of the member portal's **deposit**
+sheet (`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px
+top radius, 52×42 tile with serif heading, phone field with icon, 2×2 selectable grid,
+dark CONFIRM & PAY, CANCEL and the circle-i info line — followed by the same immersive
+pending → success → failed PIN overlay. Only the labels and the bundle content differ.
+These checks assert the shared colours and metrics against the member sheet itself, so
+the two flows cannot drift apart, and assert the displayed bundle prices against the
+server list in `lib/sms-packs.ts` (the API re-derives the price from the credit count,
+so a mismatch would show one price and charge another).
 
 ```bash
 node test/sms-purchase-parity-tests.mjs   # expected: 15/15 checks passed
