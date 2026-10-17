@@ -158,7 +158,20 @@ export async function POST(req: NextRequest) {
       // The pending row stays. If NaJiki did take a payment, its webhook or the confirm route
       // still credits it. A pending row with no NaJiki payment credits nothing.
       console.error('[SMS Topup API] NaJiki payment request failed:', gatewayErr?.message);
-      return NextResponse.json({ error: `Mobile money request failed: ${gatewayErr?.message || 'NaJiki unavailable'}` }, { status: 502 });
+      const gatewayMessage = gatewayErr?.message || 'NaJiki unavailable';
+      // BUY_SMS is a platform fee in NaJiki's PLATFORM_FEE_TYPES, so it is exempt
+      // from the per-tenant credential rule. Seeing that rule fire for this
+      // route means NaJiki has no BUY_SMS payment type row for the application:
+      // the code resolved to null and the purchase was treated as tenant money.
+      // Say so, otherwise the operator goes hunting for SACCO credentials that
+      // are not the problem. Intent creation failed, so nothing was collected.
+      const missingPlatformPaymentType =
+        /no active credentials configured/i.test(gatewayMessage)
+        && /requires per-tenant credentials/i.test(gatewayMessage);
+      const error = missingPlatformPaymentType
+        ? `${gatewayMessage} — NaJiki has no BUY_SMS payment type for this application, so the purchase was treated as a tenant collection. Add BUY_SMS in NaJiki Setup. No money was taken.`
+        : gatewayMessage;
+      return NextResponse.json({ error: `Mobile money request failed: ${error}` }, { status: 502 });
     }
 
     // Link the ledger row to NaJiki's reference: the webhook and the confirm route look the top-up

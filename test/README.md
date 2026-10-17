@@ -191,7 +191,21 @@ node_modules/.bin/tsx test/payment-intent-currency-tests.mjs
 # Adversarial regression checks; former exploit cases must now be refused.
 node test/money-engine-adversarial-tests.mjs
 node_modules/.bin/tsx test/money-engine-webhook-adversarial-tests.mjs
+
+# Admin SMS purchase against a simulator transcribed from the real NaJiki
+# source (create-payment rules, webhook envelope, status endpoint).
+# Expected: 29 checks passed.
+node_modules/.bin/tsx test/sms-purchase-najiki-live-contract-tests.mjs
 ```
+
+The NaJiki contract suite runs the real top-up, confirm and webhook handlers
+against PGlite with migrations 21–37. It reproduces the two consequences of a
+NaJiki deployment without a `BUY_SMS` payment type (refused when the SACCO has no
+tenant credentials; silently booked as a tenant collection when it does), then
+verifies the full purchase, signed success, retry, failure, signature/replay
+rejections, amount/currency/tenant guards, the create-response race, and the
+dashboard's confirm poll. See
+`../docs/security/sms-purchase-najiki-verification-2026-10-17.md`.
 
 The SQL adversarial suite applies the actual migrations in PGlite and verifies
 amount drift, wrong transaction direction, unbacked/duplicate refunds, nested
