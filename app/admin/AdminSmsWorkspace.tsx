@@ -19,10 +19,9 @@ import {
 } from 'lucide-react';
 import { smsSegments } from '@/lib/sms-segments';
 import {
-  normalizeSmsCredits,
-  smsPriceForCredits,
-  SMS_MAX_CREDITS,
-  SMS_MIN_CREDITS,
+  normalizeSmsAmount,
+  smsAmountBounds,
+  smsTopupForAmount,
 } from '@/lib/sms-bundles';
 import styles from './AdminSmsWorkspace.module.css';
 
@@ -62,7 +61,7 @@ type AdminSmsWorkspaceProps = {
   onSmsMessageTextChange: (message: string) => void;
   isSendingSms: boolean;
   onSendBroadcast: () => void;
-  onBuyCredits: (credits?: number) => void;
+  onBuyAmount: (amount?: number) => void;
 };
 
 const RECIPIENT_OPTIONS: RecipientOption[] = [
@@ -163,30 +162,32 @@ export default function AdminSmsWorkspace({
   onSmsMessageTextChange,
   isSendingSms,
   onSendBroadcast,
-  onBuyCredits,
+  onBuyAmount,
 }: AdminSmsWorkspaceProps) {
-  // No hardcoded packs: the admin enters the number of SMS they want, and the
-  // price is the SACCO's DB-stored per-SMS rate. The server re-prices it anyway.
-  const [buyCreditsInput, setBuyCreditsInput] = useState('500');
+  // No hardcoded packs: the admin enters the amount to spend and the SMS count
+  // is derived from the SACCO's DB-stored per-SMS rate. The server re-derives
+  // both anyway, so a stale rate here can never change what is charged.
+  const [buyAmountInput, setBuyAmountInput] = useState('25000');
   const [buyError, setBuyError] = useState<string | null>(null);
-  const requestedBuyCredits = normalizeSmsCredits(Number(buyCreditsInput));
-  const buyTotal = requestedBuyCredits === null
+  const buyBounds = smsAmountBounds(smsRate);
+  const requestedBuyAmount = normalizeSmsAmount(Number(buyAmountInput));
+  const buyQuote = requestedBuyAmount === null
     ? null
-    : smsPriceForCredits(requestedBuyCredits, smsRate);
+    : smsTopupForAmount(requestedBuyAmount, smsRate);
 
   const submitBuy = () => {
-    if (requestedBuyCredits === null) {
+    if (buyQuote === null) {
       setBuyError(
-        `Enter a whole number of SMS between ${SMS_MIN_CREDITS.toLocaleString()} and ${SMS_MAX_CREDITS.toLocaleString()}.`
+        buyBounds
+          ? `Enter an amount between ${formatMoney(buyBounds.min)} and ${formatMoney(buyBounds.max)}.`
+          : 'SMS pricing is unavailable right now. Please contact support.'
       );
       return;
     }
-    if (buyTotal === null) {
-      setBuyError('SMS pricing is unavailable right now. Please contact support.');
-      return;
-    }
     setBuyError(null);
-    onBuyCredits(requestedBuyCredits);
+    // Hand the server's authoritative charge to the checkout sheet, so a typed
+    // amount that is not a multiple of the rate is normalised in one place.
+    onBuyAmount(buyQuote.amount);
   };
 
   const customPhones = useMemo(() => parseCustomPhones(customPhoneList), [customPhoneList]);
@@ -246,7 +247,7 @@ export default function AdminSmsWorkspace({
           </div>
           <div className={styles.balanceActions}>
             {smsLowBalance && <span className={styles.lowBalanceBadge}><AlertCircle size={12} /> Low balance</span>}
-            <button type="button" className={styles.topUpButton} onClick={() => onBuyCredits()}>
+            <button type="button" className={styles.topUpButton} onClick={() => onBuyAmount()}>
               <Plus size={15} strokeWidth={2.2} /> Buy credits
             </button>
           </div>
@@ -432,25 +433,25 @@ export default function AdminSmsWorkspace({
               <span className={styles.asideHeadingIcon}><Wallet size={17} /></span>
               <div>
                 <h2 id="sms-top-up-title">Top up credits</h2>
-                <p>Buy any number of SMS and pay with Mobile Money.</p>
+                <p>Enter an amount and pay with Mobile Money.</p>
               </div>
             </div>
             <form
               className={styles.buyForm}
               onSubmit={(event) => { event.preventDefault(); submitBuy(); }}
             >
-              <label className={styles.buyLabel} htmlFor="sms-top-up-credits">Number of SMS</label>
+              <label className={styles.buyLabel} htmlFor="sms-top-up-amount">Amount (UGX)</label>
               <div className={styles.buyRow}>
                 <input
-                  id="sms-top-up-credits"
+                  id="sms-top-up-amount"
                   type="number"
                   inputMode="numeric"
-                  min={SMS_MIN_CREDITS}
-                  max={SMS_MAX_CREDITS}
+                  min={buyBounds?.min}
+                  max={buyBounds?.max}
                   step={1}
-                  value={buyCreditsInput}
+                  value={buyAmountInput}
                   onChange={(event) => {
-                    setBuyCreditsInput(event.target.value);
+                    setBuyAmountInput(event.target.value);
                     setBuyError(null);
                   }}
                   className={styles.buyInput}
@@ -461,7 +462,9 @@ export default function AdminSmsWorkspace({
               </div>
               <p id="sms-top-up-total" className={styles.buyMeta}>
                 {formatMoney(smsRate)} per SMS
-                {buyTotal !== null ? ` · Total ${formatMoney(buyTotal)}` : ''}
+                {buyQuote !== null
+                  ? ` · You get ${formatNumber(buyQuote.credits)} SMS${buyQuote.amount !== requestedBuyAmount ? ` for ${formatMoney(buyQuote.amount)}` : ''}`
+                  : ''}
               </p>
               {buyError && <p className={styles.buyError} role="alert">{buyError}</p>}
             </form>

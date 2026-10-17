@@ -17,10 +17,9 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
-  normalizeSmsCredits,
-  smsPriceForCredits,
-  SMS_MAX_CREDITS,
-  SMS_MIN_CREDITS,
+  normalizeSmsAmount,
+  smsAmountBounds,
+  smsTopupForAmount,
 } from '@/lib/sms-bundles';
 
 /* ── Admin workspace palette ──────────────────────────────────── */
@@ -142,7 +141,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Buy SMS State
   const [showBuyModal, setShowBuyModal] = useState(false);
-  const [buyCredits, setBuyCredits] = useState('500');
+  const [buyAmount, setBuyAmount] = useState('25000');
   const [momoNumber, setMomoNumber] = useState('');
   const [isProcessingBuy, setIsProcessingBuy] = useState(false);
   // Immersive checkout overlay — same pending → success → failed sequence as the
@@ -155,12 +154,15 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     message?: string;
   } | null>(null);
 
-  // No hardcoded packs: the admin types how many SMS to buy and the server
-  // prices them from this SACCO's DB-stored rate (wallets.sms_rate).
-  const parsedBuyCredits = normalizeSmsCredits(Number(buyCredits));
-  const buyCreditsPrice = parsedBuyCredits === null
+  // No hardcoded packs: the admin types the amount to spend and the server
+  // derives the SMS count from this SACCO's DB-stored rate (wallets.sms_rate).
+  const parsedBuyAmount = normalizeSmsAmount(Number(buyAmount));
+  const buyBounds = smsAmountBounds(smsRate);
+  const buyQuote = parsedBuyAmount === null
     ? null
-    : smsPriceForCredits(parsedBuyCredits, smsRate);
+    : smsTopupForAmount(parsedBuyAmount, smsRate);
+  const quotedBuyCredits = buyQuote?.credits ?? null;
+  const quotedBuyCharge = buyQuote?.amount ?? null;
 
   // Loan Underwriting Processing
   const [processingLoanId, setProcessingLoanId] = useState<string | null>(null);
@@ -420,8 +422,8 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Buy SMS Bundle Handler — mirrors the member portal checkout:
   // sheet → PIN overlay (pending) → success / failed, no toast-and-close.
-  const openBuySheet = (credits?: number) => {
-    if (typeof credits === 'number') setBuyCredits(String(credits));
+  const openBuySheet = (amount?: number) => {
+    if (typeof amount === 'number') setBuyAmount(String(amount));
     setShowBuyModal(true);
   };
 
@@ -431,12 +433,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   };
 
   const handleBuySms = async () => {
-    if (parsedBuyCredits === null) {
-      alert(`Enter a whole number of SMS between ${SMS_MIN_CREDITS.toLocaleString()} and ${SMS_MAX_CREDITS.toLocaleString()}.`);
-      return;
-    }
-    if (buyCreditsPrice === null) {
-      alert('SMS pricing is unavailable right now. Please contact support.');
+    if (buyQuote === null || parsedBuyAmount === null) {
+      alert(buyBounds
+        ? `Enter an amount between ${UGX(buyBounds.min)} and ${UGX(buyBounds.max)}.`
+        : 'SMS pricing is unavailable right now. Please contact support.');
       return;
     }
 
@@ -464,7 +464,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         body: JSON.stringify({
           token: session.access_token,
           momoNumber: momoNumber,
-          credits: parsedBuyCredits,
+          amount: parsedBuyAmount,
           phone: momoNumber,
           organizationId: orgId
         })
@@ -477,8 +477,8 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         setTopupPrompt({
           // Prefer the server's authoritative numbers; fall back to the local
           // estimate only if the response omits them.
-          credits: Number(data.credits) || parsedBuyCredits,
-          price: Number(data.amount) || buyCreditsPrice,
+          credits: Number(data.credits) || buyQuote.credits,
+          price: Number(data.amount) || buyQuote.amount,
           phone: momoNumber.trim(),
           status: 'pending',
         });
@@ -1406,7 +1406,7 @@ New members become active automatically when they pay the activation fee. Declin
             onSmsMessageTextChange={setSmsMessageText}
             isSendingSms={isSendingSms}
             onSendBroadcast={handleSendBroadcast}
-            onBuyCredits={openBuySheet}
+            onBuyAmount={openBuySheet}
           />
         )}
 
@@ -1658,25 +1658,25 @@ New members become active automatically when they pay the activation fee. Declin
 
               <div>
                 <label
-                  htmlFor="buy-sms-credits"
+                  htmlFor="buy-sms-amount"
                   style={{ fontSize: 11, fontWeight: 800, color: '#A5927D', letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}
                 >
-                  Number of SMS
+                  Amount (UGX)
                 </label>
                 <div style={{
                   display: 'flex', alignItems: 'center', background: '#FCFAEE', borderRadius: 14,
                   padding: '0 16px', height: 54, border: '1px solid #EAE0CC'
                 }}>
                   <input
-                    id="buy-sms-credits"
+                    id="buy-sms-amount"
                     type="number"
                     inputMode="numeric"
-                    min={SMS_MIN_CREDITS}
-                    max={SMS_MAX_CREDITS}
+                    min={buyBounds?.min}
+                    max={buyBounds?.max}
                     step={1}
                     required
-                    value={buyCredits}
-                    onChange={e => setBuyCredits(e.target.value)}
+                    value={buyAmount}
+                    onChange={e => setBuyAmount(e.target.value)}
                     disabled={isProcessingBuy}
                     aria-describedby="buy-sms-total"
                     style={{
@@ -1687,7 +1687,10 @@ New members become active automatically when they pay the activation fee. Declin
                 </div>
                 <p id="buy-sms-total" style={{ margin: '8px 2px 0', fontSize: 12, fontWeight: 700, color: '#887563' }}>
                   {UGX(smsRate)} per SMS
-                  {buyCreditsPrice !== null ? ` · Total ${UGX(buyCreditsPrice)}` : ''}
+                  {quotedBuyCredits !== null ? ` · You get ${quotedBuyCredits.toLocaleString('en-UG')} SMS` : ''}
+                  {quotedBuyCharge !== null && quotedBuyCharge !== parsedBuyAmount
+                    ? ` · Charged ${UGX(quotedBuyCharge)}`
+                    : ''}
                 </p>
               </div>
 

@@ -5,8 +5,8 @@
  * get: cream bottom sheet, phone field with icon, selectable bundle grid, dark
  * CONFIRM & PAY button, then the immersive pending → success → failed PIN
  * overlay. These checks keep the two flows from drifting apart again, and — more
- * importantly — keep the displayed bundle prices in step with the server-side
- * price list, because the API re-derives the price from the credit count.
+ * importantly — keep the displayed amounts in step with the server-side price,
+ * because the API re-derives the SMS count from the amount and the DB rate.
  *
  * Run: node test/sms-purchase-parity-tests.mjs
  */
@@ -42,10 +42,10 @@ check('the hardcoded SMS pack/bundle price list is gone', () => {
   assert.ok(!admin.includes('SMS_PACKS'), 'a hardcoded pack list is still declared');
 });
 
-check('the admin UI sends a credit count and shows the DB-derived price', () => {
-  assert.match(admin, /normalizeSmsCredits\(Number\(buyCredits\)\)/);
-  assert.match(admin, /smsPriceForCredits\(parsedBuyCredits, smsRate\)/);
-  assert.match(admin, /credits:\s*parsedBuyCredits/);
+check('the admin UI takes an amount and shows the DB-derived SMS count', () => {
+  assert.match(admin, /normalizeSmsAmount\(Number\(buyAmount\)\)/);
+  assert.match(admin, /smsTopupForAmount\(parsedBuyAmount, smsRate\)/);
+  assert.match(admin, /amount:\s*parsedBuyAmount/);
   assert.match(admin, /per SMS/);
   assert.doesNotMatch(admin, /price:\s*\d{3,}/, 'a hardcoded price is still present in the UI');
 });
@@ -97,10 +97,11 @@ check('the old gradient-header checkout modal is gone', () => {
   assert.ok(!admin.includes('Authorize UGX'), 'old checkout button still present');
 });
 
-check('the sheet has the member field-with-icon, a free quantity field and the dark confirm button', () => {
+check('the sheet has the member field-with-icon, a free amount field and the dark confirm button', () => {
   assert.match(ADMIN_SHEET, /<Phone size=\{18\} color="#A5927D" \/>/);
   assert.match(ADMIN_SHEET, /type="number"/);
-  assert.match(ADMIN_SHEET, /min=\{SMS_MIN_CREDITS\}/);
+  assert.match(ADMIN_SHEET, /min=\{buyBounds\?\.min\}/);
+  assert.match(ADMIN_SHEET, /Amount \(UGX\)/);
   assert.match(ADMIN_SHEET, /per SMS/);
   assert.match(ADMIN_SHEET, /\{isProcessingBuy \? 'PROCESSING\.\.\.' : 'CONFIRM & PAY'\} <CheckCircle2 size=\{16\} \/>/);
   assert.match(ADMIN_SHEET, /You will receive a PIN prompt on your phone\./);
@@ -158,14 +159,15 @@ check('the same pulse animation name is used by both overlays', () => {
 });
 
 // ── 4. Money-path behaviour preserved ───────────────────────────────────────
-check('the admin purchase still posts credits only (never a client-chosen price)', () => {
+check('the admin purchase posts an amount only (never a client-chosen price or credit count)', () => {
   const call = admin.indexOf("fetch('/api/admin/sms/topup'");
   const bodyStart = admin.indexOf('body: JSON.stringify({', call);
   const bodyEnd = admin.indexOf('})', bodyStart);
   assert.ok(call > -1 && bodyStart > -1 && bodyEnd > bodyStart, 'could not locate the top-up request body');
   const body = admin.slice(bodyStart, bodyEnd);
-  assert.match(body, /credits:\s*parsedBuyCredits/);
+  assert.match(body, /amount:\s*parsedBuyAmount/);
   assert.ok(!/price:/.test(body), 'the client sent a price to the server');
+  assert.ok(!/credits:/.test(body), 'the client sent a credit count instead of letting the server derive it');
 });
 
 check('the purchase validates the mobile-money number before calling the API', () => {

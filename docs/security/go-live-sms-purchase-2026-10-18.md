@@ -51,9 +51,10 @@ credits the wallet. Verified by the live-contract suite (31/31).
   error line = fix env before continuing.
 
 ### 5. Controlled live smoke test (one real purchase)
-1. As the live SACCO admin, buy **200 SMS** (priced at 200 × the SACCO's DB-stored
-   `public.wallets.sms_rate`; UGX 10,000 at the default UGX 50/SMS, but always read the
-   total shown by the app before approving) to a phone you control.
+1. As the live SACCO admin, top up **UGX 10,000** to a phone you control. The sheet
+   converts the amount to SMS at the SACCO's DB-stored `public.wallets.sms_rate`
+   (200 SMS at the default UGX 50/SMS; always read the count and charge shown by the
+   app before approving).
 2. Approve the PIN prompt.
 3. Within ~30 s the dashboard confirm poll should show success. Verify:
    - SMS wallet balance +10,000 (200 credits),

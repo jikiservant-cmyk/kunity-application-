@@ -5,9 +5,12 @@ import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
 import { normalizeUgMomo } from '@/lib/validators';
 import {
+  normalizeSmsAmount,
   normalizeSmsCredits,
   parseSmsRate,
+  smsAmountBounds,
   smsPriceForCredits,
+  smsTopupForAmount,
   SMS_MIN_CREDITS,
   SMS_MAX_CREDITS,
 } from '@/lib/sms-bundles';
@@ -36,19 +39,44 @@ export async function POST(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
-    const { token, credits, momoNumber } = body;
+    // The admin enters the amount to spend in UGX and the server derives the SMS
+    // count. `credits` is still accepted for backwards compatibility, but the two
+    // spellings are mutually exclusive so a request can never mix a typed amount
+    // with a credit count.
+    const { token, credits, amount: amountInput, momoNumber } = body;
 
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized: Missing token' }, { status: 401 });
     }
 
-    // SECURITY (pentest 2026-10-13): the price is never taken from the client.
-    // The admin enters how many SMS to buy; the server prices it from the
-    // per-SMS rate stored for this SACCO in `public.wallets.sms_rate`.
-    const creditsRequested = normalizeSmsCredits(credits);
-    if (creditsRequested === null) {
+    const hasCredits = credits !== undefined && credits !== null;
+    const hasAmount = amountInput !== undefined && amountInput !== null;
+
+    if (!hasCredits && !hasAmount) {
+      return NextResponse.json({
+        error: 'Enter the amount you want to top up, in UGX.'
+      }, { status: 400 });
+    }
+    if (hasCredits && hasAmount) {
+      return NextResponse.json({
+        error: 'Send either an amount in UGX or a number of SMS, not both.'
+      }, { status: 400 });
+    }
+
+    // SECURITY (pentest 2026-10-13/17): the price is never taken from the client.
+    // The admin enters how much to spend; the server derives the SMS count and the
+    // exact charge from the per-SMS rate stored in `public.wallets.sms_rate`.
+    const creditsRequestedInput = hasCredits ? normalizeSmsCredits(credits) : null;
+    if (hasCredits && creditsRequestedInput === null) {
       return NextResponse.json({
         error: `Enter a whole number of SMS between ${SMS_MIN_CREDITS.toLocaleString()} and ${SMS_MAX_CREDITS.toLocaleString()}.`
+      }, { status: 400 });
+    }
+
+    const amountRequestedInput = hasAmount ? normalizeSmsAmount(amountInput) : null;
+    if (hasAmount && amountRequestedInput === null) {
+      return NextResponse.json({
+        error: 'Enter the top-up amount as a whole number of shillings (UGX).'
       }, { status: 400 });
     }
 
@@ -151,11 +179,30 @@ export async function POST(req: NextRequest) {
       }, { status: 503 });
     }
 
-    const amount = smsPriceForCredits(creditsRequested, smsRate);
-    if (amount === null) {
-      return NextResponse.json({
-        error: 'This top-up amount is outside the allowed range. Contact support if you need a larger bundle.'
-      }, { status: 400 });
+    let creditsRequested: number;
+    let amount: number;
+
+    if (hasAmount) {
+      const quote = smsTopupForAmount(amountRequestedInput!, smsRate);
+      if (quote === null) {
+        const bounds = smsAmountBounds(smsRate);
+        return NextResponse.json({
+          error: bounds
+            ? `Enter an amount between UGX ${bounds.min.toLocaleString('en-UG')} and UGX ${bounds.max.toLocaleString('en-UG')} at this SACCO's rate of UGX ${smsRate}/SMS.`
+            : 'This top-up amount is outside the allowed range. Contact support if you need a larger bundle.'
+        }, { status: 400 });
+      }
+      creditsRequested = quote.credits;
+      amount = quote.amount;
+    } else {
+      const pricedAmount = smsPriceForCredits(creditsRequestedInput!, smsRate);
+      if (pricedAmount === null) {
+        return NextResponse.json({
+          error: 'This top-up amount is outside the allowed range. Contact support if you need a larger bundle.'
+        }, { status: 400 });
+      }
+      creditsRequested = creditsRequestedInput!;
+      amount = pricedAmount;
     }
 
     // Fetch tenant code
@@ -319,7 +366,7 @@ export async function POST(req: NextRequest) {
       action: 'create_sms_topup_intent',
       entityType: 'payment_intent',
       entityId: najikiRef,
-      newData: { amount, credits: creditsRequested, smsRate, momoNumber: momo }
+      newData: { amount, credits: creditsRequested, smsRate, momoNumber: momo, enteredAmount: hasAmount ? amountRequestedInput : null }
     });
 
     const responseIntent = callbackState === 'pending' ? intent : { ...intent, status: callbackState };

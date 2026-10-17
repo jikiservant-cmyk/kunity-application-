@@ -141,11 +141,12 @@ The admin SMS checkout keeps the member portal's **deposit** sheet shell
 (`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px top
 radius, 52×42 tile with serif heading, phone field with icon, dark CONFIRM & PAY,
 CANCEL and the circle-i info line — followed by the same immersive pending → success →
-failed PIN overlay. There is no fixed bundle grid: the admin enters how many SMS to
-buy, and the server prices them from the SACCO's DB-stored per-SMS rate
-(`public.wallets.sms_rate`, via `lib/sms-bundles.ts`). The checks assert the shared
-colours and metrics against the member sheet, that no hardcoded pack/price list exists,
-and that the client sends only a credit count (never a price).
+failed PIN overlay. There is no fixed bundle grid: the admin enters the amount to
+spend in UGX, and the server derives the SMS count and the exact charge from the
+SACCO's DB-stored per-SMS rate (`public.wallets.sms_rate`, via `lib/sms-bundles.ts`).
+The checks assert the shared colours and metrics against the member sheet, that no
+hardcoded pack/price list exists, and that the client sends only an amount (never a
+price or a credit count).
 
 ```bash
 node test/sms-purchase-parity-tests.mjs   # expected: 16/16 checks passed
