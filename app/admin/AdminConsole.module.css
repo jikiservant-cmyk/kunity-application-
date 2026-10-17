@@ -312,6 +312,12 @@
   padding: 22px 24px 28px;
 }
 
+.pageContentSms {
+  max-width: none;
+  padding: 0;
+  background: #fff;
+}
+
 .welcome {
   display: flex;
   align-items: center;
@@ -828,6 +834,10 @@
 
   .pageContent {
     padding: 16px 12px calc(88px + env(safe-area-inset-bottom));
+  }
+
+  .pageContentSms {
+    padding: 0 0 calc(88px + env(safe-area-inset-bottom));
   }
 
   .welcome {
