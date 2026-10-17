@@ -4,6 +4,7 @@ import { paymentGateway } from '@/lib/payments/gateway';
 import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
 import { packForCredits, normalizeUgMomo } from '@/lib/sms-packs';
+import { paymentIntentLimiter } from '@/lib/rate-limit';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,7 +22,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const body = await req.json();
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
     const { token, credits, momoNumber } = body;
 
     if (!token) {
@@ -65,6 +71,17 @@ export async function POST(req: NextRequest) {
 
     if (!tenantId) {
       return NextResponse.json({ error: 'Unauthorized: Admin is not associated with any tenant' }, { status: 400 });
+    }
+
+    // SECURITY (pentest 2026-10-17): this is the only mobile-money entry point for
+    // the admin console, and it had no throttling. A compromised admin token could
+    // otherwise trigger unlimited mobile-money collections (PIN prompts on the
+    // payer's phone) and fill the ledger with pending rows. Per administrator,
+    // mirroring /api/payments/intent.
+    try {
+      await paymentIntentLimiter.check(15, `sms_topup:${user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Rate limit exceeded for SMS top-ups. Please wait a minute.' }, { status: 429 });
     }
 
     // Retrieve tenant wallet from public.wallets (Sacco schema)
@@ -252,6 +269,7 @@ export async function POST(req: NextRequest) {
 
   } catch (err: any) {
     console.error('Error initiating SMS wallet topup:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    // SECURITY: never reflect internal error text (SQL details, file paths) to the client.
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

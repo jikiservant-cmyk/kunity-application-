@@ -3,7 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
-import { packForPrice } from '@/lib/sms-packs';
+import { packForPrice, normalizeUgMomo } from '@/lib/sms-packs';
 import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function POST(req: NextRequest) {
@@ -18,7 +18,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const body = await req.json();
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
     const { token, intentId, momoNumber } = body;
 
     if (!token || !intentId) {
@@ -287,7 +292,9 @@ export async function POST(req: NextRequest) {
       .insert({
         tenant_id: tenantId,
         application_id: applicationId,
-        phone_number: momoNumber || 'SYSTEM',
+        // Normalize: this value comes from the request body. Anything that is not
+        // a UG mobile-money number becomes the synthetic 'SYSTEM' sender tag.
+        phone_number: normalizeUgMomo(momoNumber) || 'SYSTEM',
         compiled_message: `SYSTEM CREDIT: Top-up of ${creditsAdded.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.balance / (parseFloat(existingWallet.sms_rate) || 50))} credits.`,
         cost: addedAmount,
         transaction_type: 'credit',
@@ -319,6 +326,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: any) {
     console.error('Error confirming SMS topup:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    // SECURITY: never reflect internal error text (SQL details, file paths) to the client.
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

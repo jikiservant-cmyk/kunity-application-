@@ -196,7 +196,17 @@ node_modules/.bin/tsx test/money-engine-webhook-adversarial-tests.mjs
 # source (create-payment rules, webhook envelope, status endpoint).
 # Expected: 29 checks passed.
 node_modules/.bin/tsx test/sms-purchase-najiki-live-contract-tests.mjs
+
+# Penetration test of the SMS purchase path: forged/replayed webhooks,
+# cross-tenant confirm attacks, rogue-gateway payloads, races, SQL depth,
+# and purchase rate limiting. Expected: 55 checks passed.
+node_modules/.bin/tsx test/sms-purchase-pentest-tests.mjs
 ```
+
+Both SMS purchase suites share `lib/sms-purchase-harness.mjs` (PGlite +
+migrations 21–37, NaJiki simulator, Supabase REST/RPC stand-in). See
+`../docs/security/sms-purchase-najiki-verification-2026-10-17.md` and
+`../docs/security/sms-purchase-pentest-2026-10-17.md`.
 
 The NaJiki contract suite runs the real top-up, confirm and webhook handlers
 against PGlite with migrations 21–37. It reproduces the two consequences of a

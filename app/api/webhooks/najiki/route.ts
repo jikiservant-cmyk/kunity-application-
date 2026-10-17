@@ -140,15 +140,21 @@ export async function POST(req: Request) {
 
     // NaJiki webhook payload
     const payloadData = body.data || body;
-    const { 
-      reference, 
-      status, 
-      amount, 
-      externalEntityId, 
-      paymentType, 
+    const {
+      reference,
+      amount,
+      externalEntityId,
+      paymentType,
       metadata,
       fee = 0 // Default to 0 if fee not provided
     } = payloadData;
+
+    // SECURITY (pentest 2026-10-17): normalize status casing before every
+    // comparison. An unrecognized status used to fall through the SMS branch to
+    // the generic payment RPC, which ACKed it with 200 ("intermediate status
+    // recorded") while never crediting the wallet — silent money loss if a
+    // provider ever changes casing ("SUCCESS" vs "success").
+    const status = String(payloadData.status || '').trim().toLowerCase();
 
     const finalPaymentType = paymentType || payloadData.paymentTypeCode || metadata?.paymentTypeCode;
     const isSuccessfulPaymentStatus = status === 'success' || status === 'successful';
