@@ -23,8 +23,12 @@ export const config = {
      *   requests to /auth, which would break the signup SACCO selector.)
      * - api/health (deployment/configuration probe: must answer without a session
      *   and without spending a Supabase getUser() round trip on every uptime check)
+     * - api/inngest (Inngest serve endpoint: the platform calls GET/POST/PUT without
+     *   session cookies to sync and run background jobs. Behind this proxy every
+     *   call was redirected to /auth, so SMS broadcasts and alerts were queued but
+     *   never executed. The handler verifies INNGEST_SIGNING_KEY itself.)
      * Feel free to modify this pattern to include more paths.
      */
-    "/((?!_next/static|_next/image|favicon.ico|api/auth/profile|api/webhooks|api/internal|api/organizations|api/health|api/messaging|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth/profile|api/webhooks|api/internal|api/organizations|api/health|api/inngest|api/messaging|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
