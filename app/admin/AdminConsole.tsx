@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import ProductsSettings from './ProductsSettings';
 import AdminOverview, { type AdminConsoleTab } from './AdminOverview';
+import AdminSmsWorkspace, { type AdminSmsBundle, type AdminSmsRecipientType } from './AdminSmsWorkspace';
 import styles from './AdminConsole.module.css';
 import { 
   Building2, Users, CreditCard, Send, Shield, RefreshCw, LogOut, 
@@ -148,7 +149,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   // SMS Broadcast State
-  const [smsRecipientType, setSmsRecipientType] = useState<'all' | 'single' | 'custom'>('all');
+  const [smsRecipientType, setSmsRecipientType] = useState<AdminSmsRecipientType>('all');
   const [singleRecipientPhone, setSingleRecipientPhone] = useState('');
   const [customPhoneList, setCustomPhoneList] = useState('');
   const [smsMessageText, setSmsMessageText] = useState('');
@@ -427,7 +428,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Buy SMS Bundle Handler — mirrors the member portal checkout:
   // sheet → PIN overlay (pending) → success / failed, no toast-and-close.
-  const openBuySheet = (pack?: { credits: number; price: number; tag?: string }) => {
+  const openBuySheet = (pack?: AdminSmsBundle) => {
     if (pack) setSelectedPack(pack);
     setShowBuyModal(true);
   };
@@ -883,7 +884,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
           {ADMIN_NAV_ITEMS.map((item) => renderAdminNavItem(item, true))}
         </nav>
 
-        <main className={styles.pageContent}>
+        <main className={`${styles.pageContent} ${activeTab === 'sms' ? styles.pageContentSms : ''}`}>
         {/* Toast Alert */}
         {toastMessage && (
           <div style={{
@@ -1388,199 +1389,26 @@ New members become active automatically when they pay the activation fee. Declin
             TAB 5: SMS BROADCAST & COMMUNICATION
         ─────────────────────────────────────────────────────────── */}
         {activeTab === 'sms' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 24 }}>
-            
-            {/* SMS Compose Card */}
-            <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div>
-                <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 18, fontWeight: 900, color: T.text, margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <Send size={20} color={T.cMid} />
-                  <span>Cooperative SMS Broadcast</span>
-                </h3>
-                <p style={{ fontSize: 12, color: T.sub, marginTop: 4, margin: 0 }}>
-                  Broadcast instant notifications, AGM reminders, and alerts directly to member phones.
-                </p>
-              </div>
-
-              {/* Recipient Selection */}
-              <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase', marginBottom: 6 }}>
-                  Target Audience
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                  {[
-                    { id: 'all', label: `All Members (${members.length})` },
-                    { id: 'single', label: 'Single Member' },
-                    { id: 'custom', label: 'Custom Numbers' },
-                  ].map((target) => (
-                    <button
-                      key={target.id}
-                      onClick={() => setSmsRecipientType(target.id as any)}
-                      style={{
-                        padding: '8px 10px', borderRadius: 10,
-                        backgroundColor: smsRecipientType === target.id ? T.cDeep : '#FAF9F6',
-                        color: smsRecipientType === target.id ? 'white' : T.text,
-                        border: `1px solid ${smsRecipientType === target.id ? T.cDeep : T.border}`,
-                        fontSize: 11, fontWeight: 800, cursor: 'pointer'
-                      }}
-                    >
-                      {target.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Conditional Phone Input */}
-              {smsRecipientType === 'single' && (
-                <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase', marginBottom: 6 }}>
-                    Recipient Phone Number
-                  </label>
-                  <input
-                    type="tel"
-                    placeholder="e.g. 0772000111"
-                    value={singleRecipientPhone}
-                    onChange={(e) => setSingleRecipientPhone(e.target.value)}
-                    style={{
-                      width: '100%', padding: '10px 14px', borderRadius: 12,
-                      border: `1px solid ${T.border}`, fontSize: 13, outline: 'none'
-                    }}
-                  />
-                </div>
-              )}
-
-              {smsRecipientType === 'custom' && (
-                <div>
-                  <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase', marginBottom: 6 }}>
-                    Comma-separated Phone Numbers
-                  </label>
-                  <textarea
-                    rows={2}
-                    placeholder="0772000111, 0702000222, 0755000333"
-                    value={customPhoneList}
-                    onChange={(e) => setCustomPhoneList(e.target.value)}
-                    style={{
-                      width: '100%', padding: '10px 14px', borderRadius: 12,
-                      border: `1px solid ${T.border}`, fontSize: 13, outline: 'none'
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* Message Content */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <label style={{ fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase' }}>
-                    SMS Message Text
-                  </label>
-                  <span style={{ fontSize: 10, color: smsMessageText.length > 160 ? T.cMid : T.ghost }}>
-                    {smsMessageText.length}/160 chars ({Math.ceil(smsMessageText.length / 160) || 1} SMS unit)
-                  </span>
-                </div>
-                <textarea
-                  rows={4}
-                  placeholder={`Hello from ${saccoName}, please be reminded of our upcoming cooperative meeting...`}
-                  value={smsMessageText}
-                  onChange={(e) => setSmsMessageText(e.target.value)}
-                  style={{
-                    width: '100%', padding: '12px 14px', borderRadius: 14,
-                    border: `1px solid ${T.border}`, fontSize: 13, outline: 'none', lineHeight: 1.5
-                  }}
-                />
-              </div>
-
-              {/* Dispatch Button */}
-              <button
-                onClick={handleSendBroadcast}
-                disabled={isSendingSms || !smsMessageText.trim()}
-                style={{
-                  padding: '13px', borderRadius: 14,
-                  background: `linear-gradient(135deg, ${T.cDeep} 0%, ${T.cRich} 100%)`,
-                  color: 'white', border: 'none', fontWeight: 800, fontSize: 14, cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  boxShadow: `0 6px 18px ${T.cDeep}25`
-                }}
-              >
-                {isSendingSms ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                <span>Send Broadcast Alert</span>
-              </button>
-            </div>
-
-            {/* SMS Wallet & Top up Packages */}
-            <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 26, border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <h3 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 18, fontWeight: 900, color: T.text, margin: 0 }}>
-                    SMS Credit Packages
-                  </h3>
-                  <p style={{ fontSize: 12, color: T.sub, marginTop: 4, margin: 0 }}>Instant Mobile Money replenishment</p>
-                </div>
-                <span style={{ fontSize: 14, fontWeight: 900, color: T.cDeep, backgroundColor: T.cardWarm, padding: '6px 12px', borderRadius: 12, border: `1px solid ${T.border}` }}>
-                  {smsBalance.toLocaleString()} Credits
-                </span>
-              </div>
-
-              {/* Bundle Cards — the member portal's deposit amount grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-                {SMS_BUNDLES.map((pack) => {
-                  const active = selectedPack?.credits === pack.credits;
-                  return (
-                    <button
-                      key={pack.credits}
-                      type="button"
-                      onClick={() => openBuySheet(pack)}
-                      style={bundleButtonStyle(active)}
-                    >
-                      <span>{pack.credits.toLocaleString()} SMS</span>
-                      <span style={{ fontSize: 11, fontWeight: 800, opacity: 0.65 }}>
-                        {UGX(pack.price)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div style={{ marginTop: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => openBuySheet()}
-                  style={{
-                    width: '100%', height: 56, borderRadius: 16, background: '#2B1A11', color: '#FCFAEE',
-                    fontSize: 14, fontWeight: 800, border: 'none', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                    letterSpacing: '0.05em',
-                    boxShadow: '0 8px 16px rgba(43,26,17,0.2)'
-                  }}
-                >
-                  BUY SMS CREDITS <CheckCircle2 size={16} />
-                </button>
-              </div>
-              <div style={{ textAlign: 'center', fontSize: 11, color: '#A5927D', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, marginTop: -8 }}>
-                <span style={{ width: 14, height: 14, borderRadius: '50%', border: '1px solid #A5927D', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9 }}>i</span>
-                You will receive a PIN prompt on your phone.
-              </div>
-
-              {/* Recent SMS History Log */}
-              <div style={{ marginTop: 8, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase' }}>
-                  Recent Sent Broadcasts ({smsHistory.length})
-                </span>
-                <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-                  {smsHistory.slice(0, 5).map((log) => (
-                    <div key={log.id} style={{ fontSize: 12, padding: '8px 10px', borderRadius: 10, backgroundColor: T.cardWarm, border: `1px solid ${T.border}` }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', color: T.ghost, fontSize: 10 }}>
-                        <span>To: {log.recipients}</span>
-                        <span>{new Date(log.date).toLocaleDateString()}</span>
-                      </div>
-                      <div style={{ color: T.text, marginTop: 2, fontWeight: 600 }}>{log.text}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-            </div>
-
-          </div>
+          <AdminSmsWorkspace
+            saccoName={saccoName}
+            membersCount={members.length}
+            smsBalance={smsBalance}
+            smsLowBalance={smsLowBalance}
+            smsRate={smsRate}
+            smsHistory={smsHistory}
+            bundles={SMS_BUNDLES}
+            smsRecipientType={smsRecipientType}
+            onRecipientTypeChange={setSmsRecipientType}
+            singleRecipientPhone={singleRecipientPhone}
+            onSingleRecipientPhoneChange={setSingleRecipientPhone}
+            customPhoneList={customPhoneList}
+            onCustomPhoneListChange={setCustomPhoneList}
+            smsMessageText={smsMessageText}
+            onSmsMessageTextChange={setSmsMessageText}
+            isSendingSms={isSendingSms}
+            onSendBroadcast={handleSendBroadcast}
+            onBuyCredits={openBuySheet}
+          />
         )}
 
         {/* ───────────────────────────────────────────────────────────
