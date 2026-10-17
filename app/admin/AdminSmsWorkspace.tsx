@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -18,15 +18,14 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { smsSegments } from '@/lib/sms-segments';
+import {
+  normalizeSmsAmount,
+  smsAmountBounds,
+  smsTopupForAmount,
+} from '@/lib/sms-bundles';
 import styles from './AdminSmsWorkspace.module.css';
 
 export type AdminSmsRecipientType = 'all' | 'single' | 'custom';
-
-export type AdminSmsBundle = {
-  credits: number;
-  price: number;
-  tag?: string;
-};
 
 export type AdminSmsHistoryLog = {
   id?: string | number;
@@ -52,7 +51,6 @@ type AdminSmsWorkspaceProps = {
   smsLowBalance: boolean;
   smsRate: number;
   smsHistory: AdminSmsHistoryLog[];
-  bundles: AdminSmsBundle[];
   smsRecipientType: AdminSmsRecipientType;
   onRecipientTypeChange: (type: AdminSmsRecipientType) => void;
   singleRecipientPhone: string;
@@ -63,7 +61,7 @@ type AdminSmsWorkspaceProps = {
   onSmsMessageTextChange: (message: string) => void;
   isSendingSms: boolean;
   onSendBroadcast: () => void;
-  onBuyCredits: (bundle?: AdminSmsBundle) => void;
+  onBuyAmount: (amount?: number) => void;
 };
 
 const RECIPIENT_OPTIONS: RecipientOption[] = [
@@ -154,7 +152,6 @@ export default function AdminSmsWorkspace({
   smsLowBalance,
   smsRate,
   smsHistory,
-  bundles,
   smsRecipientType,
   onRecipientTypeChange,
   singleRecipientPhone,
@@ -165,8 +162,34 @@ export default function AdminSmsWorkspace({
   onSmsMessageTextChange,
   isSendingSms,
   onSendBroadcast,
-  onBuyCredits,
+  onBuyAmount,
 }: AdminSmsWorkspaceProps) {
+  // No hardcoded packs: the admin enters the amount to spend and the SMS count
+  // is derived from the SACCO's DB-stored per-SMS rate. The server re-derives
+  // both anyway, so a stale rate here can never change what is charged.
+  const [buyAmountInput, setBuyAmountInput] = useState('25000');
+  const [buyError, setBuyError] = useState<string | null>(null);
+  const buyBounds = smsAmountBounds(smsRate);
+  const requestedBuyAmount = normalizeSmsAmount(Number(buyAmountInput));
+  const buyQuote = requestedBuyAmount === null
+    ? null
+    : smsTopupForAmount(requestedBuyAmount, smsRate);
+
+  const submitBuy = () => {
+    if (buyQuote === null) {
+      setBuyError(
+        buyBounds
+          ? `Enter an amount between ${formatMoney(buyBounds.min)} and ${formatMoney(buyBounds.max)}.`
+          : 'SMS pricing is unavailable right now. Please contact support.'
+      );
+      return;
+    }
+    setBuyError(null);
+    // Hand the server's authoritative charge to the checkout sheet, so a typed
+    // amount that is not a multiple of the rate is normalised in one place.
+    onBuyAmount(buyQuote.amount);
+  };
+
   const customPhones = useMemo(() => parseCustomPhones(customPhoneList), [customPhoneList]);
   const historyGroups = useMemo(() => {
     const grouped = new Map<string, { label: string; entries: AdminSmsHistoryLog[] }>();
@@ -224,7 +247,7 @@ export default function AdminSmsWorkspace({
           </div>
           <div className={styles.balanceActions}>
             {smsLowBalance && <span className={styles.lowBalanceBadge}><AlertCircle size={12} /> Low balance</span>}
-            <button type="button" className={styles.topUpButton} onClick={() => onBuyCredits()}>
+            <button type="button" className={styles.topUpButton} onClick={() => onBuyAmount()}>
               <Plus size={15} strokeWidth={2.2} /> Buy credits
             </button>
           </div>
@@ -410,24 +433,41 @@ export default function AdminSmsWorkspace({
               <span className={styles.asideHeadingIcon}><Wallet size={17} /></span>
               <div>
                 <h2 id="sms-top-up-title">Top up credits</h2>
-                <p>Choose a bundle and pay with Mobile Money.</p>
+                <p>Enter an amount and pay with Mobile Money.</p>
               </div>
             </div>
-            <div className={styles.bundleGrid}>
-              {bundles.map((bundle) => (
-                <button
-                  type="button"
-                  key={bundle.credits}
-                  className={`${styles.bundleOption} ${bundle.tag?.toLowerCase() === 'popular' ? styles.bundleOptionPopular : ''}`}
-                  onClick={() => onBuyCredits(bundle)}
-                  aria-label={`Buy ${formatNumber(bundle.credits)} SMS credits for ${formatMoney(bundle.price)}`}
-                >
-                  <span className={styles.bundleTag}>{bundle.tag || 'Bundle'}</span>
-                  <strong>{formatNumber(bundle.credits)} <small>SMS</small></strong>
-                  <span className={styles.bundlePrice}>{formatMoney(bundle.price)}</span>
-                </button>
-              ))}
-            </div>
+            <form
+              className={styles.buyForm}
+              onSubmit={(event) => { event.preventDefault(); submitBuy(); }}
+            >
+              <label className={styles.buyLabel} htmlFor="sms-top-up-amount">Amount (UGX)</label>
+              <div className={styles.buyRow}>
+                <input
+                  id="sms-top-up-amount"
+                  type="number"
+                  inputMode="numeric"
+                  min={buyBounds?.min}
+                  max={buyBounds?.max}
+                  step={1}
+                  value={buyAmountInput}
+                  onChange={(event) => {
+                    setBuyAmountInput(event.target.value);
+                    setBuyError(null);
+                  }}
+                  className={styles.buyInput}
+                  aria-describedby="sms-top-up-total"
+                  aria-invalid={buyError ? true : undefined}
+                />
+                <button type="submit" className={styles.buyButton}>Buy</button>
+              </div>
+              <p id="sms-top-up-total" className={styles.buyMeta}>
+                {formatMoney(smsRate)} per SMS
+                {buyQuote !== null
+                  ? ` · You get ${formatNumber(buyQuote.credits)} SMS${buyQuote.amount !== requestedBuyAmount ? ` for ${formatMoney(buyQuote.amount)}` : ''}`
+                  : ''}
+              </p>
+              {buyError && <p className={styles.buyError} role="alert">{buyError}</p>}
+            </form>
             <p className={styles.walletFootnote}><ShieldCheck size={14} /> A secure Mobile Money PIN prompt will be sent to your phone.</p>
           </section>
 

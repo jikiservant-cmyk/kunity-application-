@@ -83,3 +83,15 @@ export function normalizeUgandanPhone(rawPhone: unknown): PhoneValidationResult 
 
   return { valid: true, phone: cleaned };
 }
+
+/**
+ * Uganda mobile-money MSISDN normaliser used by the SMS top-up checkout.
+ * Accepts 07XXXXXXXX, 2567XXXXXXXX or +2567XXXXXXXX (spaces/dashes allowed)
+ * and returns E.164, or null.
+ */
+export function normalizeUgMomo(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const s = input.replace(/[\s-]/g, '');
+  const m = /^(?:\+?256|0)(7\d{8})$/.exec(s);
+  return m ? `+256${m[1]}` : null;
+}

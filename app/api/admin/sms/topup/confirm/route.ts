@@ -3,7 +3,8 @@ import { createServerClient } from "@supabase/ssr";
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
-import { packForPrice, normalizeUgMomo } from '@/lib/sms-packs';
+import { normalizeUgMomo } from '@/lib/validators';
+import { parseSmsRate, smsCreditsForAmount } from '@/lib/sms-bundles';
 import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function POST(req: NextRequest) {
@@ -216,10 +217,12 @@ export async function POST(req: NextRequest) {
     }
 
     const addedAmount = expectedAmount;
-    // Credits are derived on the server from the stored amount, never taken from the client.
-    // Pack credits are the advertised count for this price; fall back to rate-derived count.
-    const creditsAdded = packForPrice(addedAmount)?.credits
-      ?? Math.floor(addedAmount / (parseFloat(existingWallet.sms_rate) || 50));
+    // Credits are derived on the server from the stored amount and this SACCO's
+    // DB-stored rate. The charge was `credits x rate`, so this returns exactly the
+    // number of SMS the admin bought. Never take a credit count from the client.
+    const walletSmsRate = parseSmsRate(existingWallet.sms_rate) ?? 50;
+    const creditsAdded = smsCreditsForAmount(addedAmount, walletSmsRate)
+      ?? Math.max(1, Math.floor(addedAmount / walletSmsRate));
 
     // Credit wallet atomically via idempotent RPC with row lock on wallet_transactions.
     // SECURITY: There is deliberately NO fallback to the non-idempotent
@@ -295,7 +298,7 @@ export async function POST(req: NextRequest) {
         // Normalize: this value comes from the request body. Anything that is not
         // a UG mobile-money number becomes the synthetic 'SYSTEM' sender tag.
         phone_number: normalizeUgMomo(momoNumber) || 'SYSTEM',
-        compiled_message: `SYSTEM CREDIT: Top-up of ${creditsAdded.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.balance / (parseFloat(existingWallet.sms_rate) || 50))} credits.`,
+        compiled_message: `SYSTEM CREDIT: Top-up of ${creditsAdded.toLocaleString()} SMS credits successful. New credit balance: ${Math.floor(creditResult.balance / walletSmsRate)} credits.`,
         cost: addedAmount,
         transaction_type: 'credit',
         status: 'delivered',
@@ -321,7 +324,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       addedCredits: creditsAdded,
-      newBalanceCredits: Math.floor(creditResult.balance / (parseFloat(existingWallet.sms_rate) || 50)),
+      newBalanceCredits: Math.floor(creditResult.balance / walletSmsRate),
       newBalanceUGX: creditResult.balance
     });
   } catch (err: any) {

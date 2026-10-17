@@ -193,7 +193,7 @@ console.log('Purchase: request payment');
   assert.equal(call0.tenantCode, 'sacco-a');
   assert.equal(call0.paymentTypeCode, 'BUY_SMS');
   assert.equal(call0.externalEntityId, TENANT);
-  assert.equal(call0.amount, 10000, 'price comes from the server pack, not the client');
+  assert.equal(call0.amount, 10000, 'price comes from the DB rate, not the client');
   assert.equal(call0.currency, 'UGX');
   assert.equal(call0.phoneNumber, '+256772123456');
   assert.match(call0.idempotencyKey, /^PAY-SMS-/);
@@ -254,10 +254,10 @@ console.log('Purchase: request payment');
 }
 {
   reset();
-  const r = await call(topup, { ...buy, credits: 999 });
+  const r = await call(topup, { ...buy, credits: 1 });
   assert.equal(r.status, 400);
   assert.equal(state.najikiCalls.length, 0);
-  ok('an unknown credit pack is refused before anything is written');
+  ok('an out-of-range SMS quantity is refused before anything is written');
 }
 
 console.log('Purchase: confirm and credit');

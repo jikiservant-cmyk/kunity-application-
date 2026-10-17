@@ -137,18 +137,19 @@ persists a key.
 
 ## SMS purchase parity (admin ↔ member)
 
-The admin SMS checkout is a value-for-value copy of the member portal's **deposit**
-sheet (`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px
-top radius, 52×42 tile with serif heading, phone field with icon, 2×2 selectable grid,
-dark CONFIRM & PAY, CANCEL and the circle-i info line — followed by the same immersive
-pending → success → failed PIN overlay. Only the labels and the bundle content differ.
-These checks assert the shared colours and metrics against the member sheet itself, so
-the two flows cannot drift apart, and assert the displayed bundle prices against the
-server list in `lib/sms-packs.ts` (the API re-derives the price from the credit count,
-so a mismatch would show one price and charge another).
+The admin SMS checkout keeps the member portal's **deposit** sheet shell
+(`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px top
+radius, 52×42 tile with serif heading, phone field with icon, dark CONFIRM & PAY,
+CANCEL and the circle-i info line — followed by the same immersive pending → success →
+failed PIN overlay. There is no fixed bundle grid: the admin enters the amount to
+spend in UGX, and the server derives the SMS count and the exact charge from the
+SACCO's DB-stored per-SMS rate (`public.wallets.sms_rate`, via `lib/sms-bundles.ts`).
+The checks assert the shared colours and metrics against the member sheet, that no
+hardcoded pack/price list exists, and that the client sends only an amount (never a
+price or a credit count).
 
 ```bash
-node test/sms-purchase-parity-tests.mjs   # expected: 15/15 checks passed
+node test/sms-purchase-parity-tests.mjs   # expected: 16/16 checks passed
 ```
 
 ## Deployment health probe
@@ -171,6 +172,19 @@ in-memory rate limiting, missing Inngest key, missing `APP_URL`). The suite asse
 sentinel secret leaks into the body in any state.
 
 ---
+
+## Member dashboard load (regression)
+
+The member page used to hang forever on its orange spinner: `loading` started as
+`true`, but no `useEffect` ever called `fetchData()`, so only a post-login action
+could clear it. The admin console was unaffected because it did have a mount
+effect. This source-level check pins the mount load, the `try/catch/finally` that
+always clears the spinner, the 30-second bound on the whole load, and the
+actionable error screen ("Dashboard could not load", Try again, Sign out).
+
+```bash
+node test/member-dashboard-load-tests.mjs   # expected: 6 checks passed
+```
 
 ## Money-engine security checks
 
