@@ -120,6 +120,19 @@ not for success; judge them against a real Supabase project.
 
 ---
 
+## SMS purchase parity (admin ↔ member)
+
+The admin SMS checkout mirrors the member portal purchase experience: cream bottom
+sheet, phone field with icon, selectable bundle grid, dark CONFIRM & PAY button, then
+the immersive pending → success → failed PIN overlay. These checks stop the two flows
+drifting apart and — critically — stop the displayed bundle prices drifting from the
+server price list in `lib/sms-packs.ts` (the API re-derives the price from the credit
+count, so a mismatch would show one price and charge another).
+
+```bash
+node test/sms-purchase-parity-tests.mjs   # expected: 15/15 checks passed
+```
+
 ## Deployment health probe
 
 `app/api/health/route.ts` answers "is this deployment actually wired up?" in one request.

@@ -41,6 +41,36 @@ const T = {
 
 const UGX = (n: number | string) => `UGX ${Number(n || 0).toLocaleString("en-UG")}`;
 
+// SMS bundles. The price list is authoritative on the server (lib/sms-packs.ts);
+// these are display cards, and the API resolves the price from the credit count.
+const SMS_BUNDLES = [
+  { credits: 200, price: 10000, tag: 'Starter' },
+  { credits: 500, price: 25000, tag: 'Popular' },
+  { credits: 1200, price: 50000, tag: 'Value' },
+  { credits: 3000, price: 100000, tag: 'Corporate' },
+];
+
+// Mobile-money checkout palette, shared with the member portal so a top-up looks
+// and feels identical wherever it is bought.
+const MOMO = {
+  sheet:   '#F3E8D5',
+  field:   '#FCFAEE',
+  chip:    '#EAE0CC',
+  ink:     '#3A271C',
+  inkSoft: '#887563',
+  muted:   '#A5927D',
+  accent:  '#A76C47',
+  button:  '#2B1A11',
+  onButton:'#FCFAEE',
+  line:    '#EAE0CC',
+  green:   '#10B981',
+  red:     '#EF4444',
+};
+
+// Uganda mobile money: 07XXXXXXXX, 2567XXXXXXXX or +2567XXXXXXXX (spaces/dashes allowed).
+const isValidMomo = (value: string) =>
+  /^(?:\+?256|0)7\d{8}$/.test(value.replace(/[\s-]/g, ''));
+
 type AdminNavigationItem = {
   key: AdminConsoleTab;
   label: string;
@@ -134,9 +164,19 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Buy SMS State
   const [showBuyModal, setShowBuyModal] = useState(false);
-  const [selectedPack, setSelectedPack] = useState<any>(null);
+  const [selectedPack, setSelectedPack] = useState<any>(SMS_BUNDLES[1]);
   const [momoNumber, setMomoNumber] = useState('');
   const [isProcessingBuy, setIsProcessingBuy] = useState(false);
+  const [buyError, setBuyError] = useState('');
+  // Immersive checkout overlay — same pending → success → failed sequence as the
+  // member portal's mobile-money deposit.
+  const [topupPrompt, setTopupPrompt] = useState<{
+    credits: number;
+    price: number;
+    phone: string;
+    status: 'pending' | 'success' | 'failed';
+    message?: string;
+  } | null>(null);
 
   // Loan Underwriting Processing
   const [processingLoanId, setProcessingLoanId] = useState<string | null>(null);
@@ -426,17 +466,41 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     }
   };
 
-  // Buy SMS Bundle Handler
+  // Buy SMS Bundle Handler — mirrors the member portal checkout:
+  // sheet → PIN overlay (pending) → success / failed, no toast-and-close.
+  const openBuySheet = (pack?: { credits: number; price: number; tag?: string }) => {
+    if (pack) setSelectedPack(pack);
+    setBuyError('');
+    setShowBuyModal(true);
+  };
+
+  const closeBuySheet = () => {
+    if (isProcessingBuy) return;
+    setShowBuyModal(false);
+    setBuyError('');
+  };
+
   const handleBuySms = async () => {
-    if (!momoNumber.trim() || !selectedPack) {
-      setToastMessage({ type: 'error', text: 'Please specify your Mobile Money phone number' });
+    if (!selectedPack) return;
+
+    if (!momoNumber.trim()) {
+      setBuyError('Please enter the Mobile Money number to charge.');
+      return;
+    }
+    if (!isValidMomo(momoNumber)) {
+      setBuyError('Phone number must look like 0772123456, 256772123456 or +256772123456.');
       return;
     }
 
+    setBuyError('');
+    setIsProcessingBuy(true);
+
     try {
-      setIsProcessingBuy(true);
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!session) {
+        setBuyError('Your session has expired. Please log in again.');
+        return;
+      }
 
       const res = await fetch('/api/admin/sms/topup', {
         method: 'POST',
@@ -450,19 +514,24 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        setToastMessage({ type: 'success', text: 'Payment requested. Check your phone and enter your PIN. Credits are added once the payment is confirmed.' });
+        // Hand over to the immersive overlay. The sheet closes; the overlay owns
+        // the rest of the journey so the admin can see exactly what is happening.
+        setTopupPrompt({
+          credits: selectedPack.credits,
+          price: selectedPack.price,
+          phone: momoNumber.trim(),
+          status: 'pending',
+        });
         setShowBuyModal(false);
-        setSelectedPack(null);
-        await fetchAdminData();
-        // Credits used to appear only if NaJiki's webhook reached us. Confirm the payment here too.
+        setMomoNumber('');
         void waitForTopupConfirmation(session.access_token, data.intentId || data.intent?.id);
       } else {
-        setToastMessage({ type: 'error', text: data.error || 'Mobile money prompt failed' });
+        setBuyError(data.error || 'Mobile money prompt failed. Please try again.');
       }
     } catch (err: any) {
-      setToastMessage({ type: 'error', text: err.message });
+      setBuyError(err?.message || 'Could not reach the payment service. Please try again.');
     } finally {
       setIsProcessingBuy(false);
     }
@@ -470,8 +539,17 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Polls the server until the NaJiki payment is confirmed and the credits are added.
   // The confirm route checks NaJiki and credits idempotently, so repeated polls are safe.
+  // Drives the checkout overlay instead of a toast, matching the member portal.
   const waitForTopupConfirmation = async (accessToken: string, intentId?: string) => {
-    if (!intentId) return;
+    if (!intentId) {
+      setTopupPrompt((prev) => prev ? {
+        ...prev,
+        status: 'failed',
+        message: 'The payment request did not return a reference. If you were charged, your credits will still be applied automatically.',
+      } : prev);
+      return;
+    }
+
     for (let attempt = 0; attempt < 40; attempt++) {
       await new Promise((r) => setTimeout(r, 5000));
       try {
@@ -483,31 +561,217 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.success) {
           const credits = data.addedCredits ?? data.newBalanceCredits;
-          setToastMessage({
-            type: 'success',
-            text: data.message === 'Already processed'
+          setTopupPrompt((prev) => prev ? {
+            ...prev,
+            status: 'success',
+            message: data.message === 'Already processed'
               ? 'This top-up was already credited to your SMS wallet.'
-              : `Payment confirmed. ${credits ? credits.toLocaleString() + ' SMS credits' : 'SMS credits'} added to your wallet.`
-          });
+              : credits
+                ? `${credits.toLocaleString()} SMS credits were added to your wallet.`
+                : 'Your SMS credits were added to your wallet.',
+          } : prev);
           await fetchAdminData();
           return;
         }
         // Still waiting on the mobile money PIN, or NaJiki is briefly unreachable: keep polling.
         const pending = res.status === 400 && /not yet successful|Failed to verify/i.test(String(data.error || ''));
         if (!pending) {
-          setToastMessage({ type: 'error', text: data.error || 'The top-up could not be confirmed.' });
+          setTopupPrompt((prev) => prev ? {
+            ...prev,
+            status: 'failed',
+            message: data.error || 'The top-up could not be confirmed.',
+          } : prev);
           return;
         }
       } catch {
         // Network blip: keep polling.
       }
     }
-    setToastMessage({
-      type: 'error',
-      text: 'The top-up is not confirmed yet. If you paid, credits are added automatically once NaJiki confirms it.'
-    });
+
+    setTopupPrompt((prev) => prev ? {
+      ...prev,
+      status: 'failed',
+      message: 'The top-up is not confirmed yet. If you paid, the credits are added automatically once NaJiki confirms it.',
+    } : prev);
   };
 
+
+  // Immersive Mobile Money checkout overlay — the member portal's PIN prompt,
+  // reused for admin SMS bundle purchases so both flows feel identical.
+  const renderTopupOverlay = () => {
+    if (!topupPrompt) return null;
+
+    const dismiss = () => setTopupPrompt(null);
+
+    return (
+      <div style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(28, 25, 23, 0.95)', zIndex: 200,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 24,
+        backdropFilter: 'blur(8px)',
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif"
+      }}>
+        <div style={{
+          background: '#FFFFFF', width: '100%', maxWidth: 440,
+          borderRadius: 28, padding: '36px 24px 28px',
+          textAlign: 'center', boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          position: 'relative'
+        }}>
+          {topupPrompt.status !== 'pending' && (
+            <button
+              onClick={dismiss}
+              aria-label="Close"
+              style={{
+                position: 'absolute', top: 20, right: 20,
+                background: 'none', border: 'none', color: '#887563',
+                fontSize: 24, cursor: 'pointer', padding: 4
+              }}
+            >
+              &times;
+            </button>
+          )}
+
+          {topupPrompt.status === 'pending' && (
+            <>
+              <div style={{ position: 'relative', width: 100, height: 100, marginBottom: 28 }}>
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+                  borderRadius: '50%', background: '#F973161A',
+                  animation: 'kunitySmsPulse 2s infinite ease-in-out'
+                }} />
+                <div style={{
+                  width: 100, height: 100, borderRadius: '50%',
+                  background: '#F973161F', display: 'flex',
+                  alignItems: 'center', justifyContent: 'center',
+                  border: '2px solid #F97316'
+                }}>
+                  <Phone size={44} color="#F97316" className="animate-bounce" />
+                </div>
+              </div>
+
+              <h3 style={{ fontSize: 24, fontWeight: 800, color: '#1C1917', margin: '0 0 12px 0' }}>
+                Confirm on Your Phone
+              </h3>
+
+              <p style={{ fontSize: 15, color: '#57534E', lineHeight: 1.6, margin: '0 0 24px' }}>
+                A secure push notification has been sent to your mobile phone at <strong style={{ color: '#1C1917' }}>{topupPrompt.phone}</strong>.
+                <br />
+                Please unlock your phone and enter your <strong style={{ color: '#F97316' }}>Mobile Money PIN</strong> to authorize the payment of <strong style={{ color: '#1C1917' }}>{UGX(topupPrompt.price)}</strong> for {topupPrompt.credits.toLocaleString()} SMS credits.
+              </p>
+
+              <div style={{ width: '100%', background: '#FFFBF7', border: '1px dashed #EAE0CC', borderRadius: 16, padding: '16px 20px', marginBottom: 24 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, textAlign: 'left' }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#3D9970' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#1C1917' }}>Payment request dispatched</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left' }}>
+                  <Loader2 size={16} className="animate-spin" style={{ color: '#F97316' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#F97316' }}>Waiting for SIM PIN authentication...</span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#A5927D', fontSize: 12 }}>
+                <span>Do not close this page while processing</span>
+              </div>
+            </>
+          )}
+
+          {topupPrompt.status === 'success' && (
+            <>
+              <div style={{
+                width: 90, height: 90, borderRadius: '50%',
+                background: '#ECFDF5', display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                border: '3px solid #10B981', marginBottom: 24
+              }}>
+                <CheckCircle2 size={52} color="#10B981" />
+              </div>
+
+              <h3 style={{ fontSize: 24, fontWeight: 800, color: '#1C1917', margin: '0 0 12px 0' }}>
+                Payment Successful!
+              </h3>
+
+              <p style={{ fontSize: 15, color: '#57534E', lineHeight: 1.6, margin: '0 0 28px' }}>
+                Awesome! We received your payment of <strong style={{ color: '#1C1917' }}>{UGX(topupPrompt.price)}</strong> via Mobile Money.
+                <br />
+                {topupPrompt.message || `${topupPrompt.credits.toLocaleString()} SMS credits were added to your wallet.`}
+              </p>
+
+              <button
+                onClick={() => { dismiss(); fetchAdminData(); }}
+                style={{
+                  width: '100%', height: 54, borderRadius: 16,
+                  background: '#3D9970', color: 'white', fontWeight: 700,
+                  border: 'none', cursor: 'pointer', fontSize: 16,
+                  boxShadow: '0 6px 20px rgba(16,185,129,0.3)'
+                }}
+              >
+                Back to SMS Dashboard
+              </button>
+            </>
+          )}
+
+          {topupPrompt.status === 'failed' && (
+            <>
+              <div style={{
+                width: 90, height: 90, borderRadius: '50%',
+                background: '#FEF2F2', display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                border: '3px solid #EF4444', marginBottom: 24
+              }}>
+                <div style={{ fontSize: 44, color: '#EF4444', fontWeight: 'bold' }}>&times;</div>
+              </div>
+
+              <h3 style={{ fontSize: 24, fontWeight: 800, color: '#1C1917', margin: '0 0 12px 0' }}>
+                Top-up Not Completed
+              </h3>
+
+              <p style={{ fontSize: 15, color: '#57534E', lineHeight: 1.6, margin: '0 0 28px' }}>
+                {topupPrompt.message || 'The mobile money PIN request timed out or was rejected on your phone.'}
+                <br />
+                <span style={{ fontSize: 13, color: '#991B1B', marginTop: 8, display: 'block' }}>
+                  Ensure your phone is near you, unlocked, has sufficient Mobile Money balance, and you entered the correct PIN.
+                </span>
+              </p>
+
+              <div style={{ display: 'flex', gap: 12, width: '100%' }}>
+                <button
+                  onClick={dismiss}
+                  style={{
+                    flex: 1, height: 50, borderRadius: 14,
+                    background: '#F5F5F4', color: '#57534E', fontWeight: 700,
+                    border: 'none', cursor: 'pointer', fontSize: 14
+                  }}
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => {
+                    const retry = { credits: topupPrompt.credits, price: topupPrompt.price };
+                    const phone = topupPrompt.phone;
+                    dismiss();
+                    setSelectedPack(retry);
+                    setMomoNumber(phone);
+                    openBuySheet(retry);
+                  }}
+                  style={{
+                    flex: 1, height: 50, borderRadius: 14,
+                    background: '#F97316', color: 'white', fontWeight: 700,
+                    border: 'none', cursor: 'pointer', fontSize: 14,
+                    boxShadow: '0 6px 18px rgba(249,115,22,0.3)'
+                  }}
+                >
+                  Try Again
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   // Filtered members list
   const filteredMembers = useMemo(() => {
@@ -1300,48 +1564,65 @@ New members become active automatically when they pay the activation fee. Declin
                 </span>
               </div>
 
-              {/* Bundle Cards */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[
-                  { credits: 200, price: 10000, tag: 'Starter' },
-                  { credits: 500, price: 25000, tag: 'Popular' },
-                  { credits: 1200, price: 50000, tag: 'Value' },
-                  { credits: 3000, price: 100000, tag: 'Corporate' },
-                ].map((pack) => (
-                  <div
-                    key={pack.credits}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      padding: '14px 16px', borderRadius: 16, backgroundColor: '#FAF9F6',
-                      border: `1px solid ${T.border}`
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <strong style={{ fontSize: 15, color: T.text }}>{pack.credits.toLocaleString()} SMS Credits</strong>
-                        <span style={{ fontSize: 10, fontWeight: 800, color: T.cMid, backgroundColor: 'rgba(22,119,255,0.1)', padding: '1px 6px', borderRadius: 6 }}>
+              {/* Bundle Cards — same 2×2 amount grid as the member portal checkout */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {SMS_BUNDLES.map((pack) => {
+                  const active = selectedPack?.credits === pack.credits;
+                  return (
+                    <button
+                      key={pack.credits}
+                      type="button"
+                      onClick={() => openBuySheet(pack)}
+                      style={{
+                        textAlign: 'left', cursor: 'pointer', padding: '14px 14px 13px',
+                        borderRadius: 14, transition: 'all 0.15s ease',
+                        background: active ? MOMO.accent : MOMO.field,
+                        color: active ? 'white' : MOMO.ink,
+                        border: active ? 'none' : `1px solid ${MOMO.line}`,
+                        boxShadow: active ? '0 4px 12px rgba(167,108,71,0.3)' : 'none',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                        <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.01em' }}>
+                          {pack.credits.toLocaleString()}
+                        </span>
+                        <span style={{
+                          fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em',
+                          padding: '2px 6px', borderRadius: 6,
+                          background: active ? 'rgba(255,255,255,0.22)' : MOMO.chip,
+                          color: active ? 'white' : MOMO.inkSoft,
+                        }}>
                           {pack.tag}
                         </span>
                       </div>
-                      <div style={{ fontSize: 11, color: T.sub }}>Cost: {UGX(pack.price)} &bull; 50 UGX/credit</div>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        setSelectedPack(pack);
-                        setShowBuyModal(true);
-                      }}
-                      style={{
-                        padding: '8px 14px', borderRadius: 10,
-                        backgroundColor: T.green, color: 'white',
-                        border: 'none', fontWeight: 800, fontSize: 12, cursor: 'pointer'
-                      }}
-                    >
-                      Top up
+                      <div style={{ fontSize: 11, marginTop: 2, opacity: active ? 0.85 : 1, color: active ? 'white' : MOMO.inkSoft }}>
+                        SMS credits
+                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 800, marginTop: 8 }}>
+                        {UGX(pack.price)}
+                      </div>
                     </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+
+              <button
+                type="button"
+                onClick={() => openBuySheet()}
+                style={{
+                  width: '100%', height: 52, borderRadius: 16,
+                  background: MOMO.button, color: MOMO.onButton,
+                  fontSize: 13, fontWeight: 800, letterSpacing: '0.05em',
+                  border: 'none', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  boxShadow: '0 8px 16px rgba(43,26,17,0.2)'
+                }}
+              >
+                <Smartphone size={17} /> BUY SMS CREDITS
+              </button>
+              <p style={{ fontSize: 11, color: MOMO.muted, textAlign: 'center', margin: '-8px 0 0' }}>
+                Pay with MTN MoMo or Airtel Money · you will get a PIN prompt on your phone.
+              </p>
 
               {/* Recent SMS History Log */}
               <div style={{ marginTop: 8, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
@@ -1596,96 +1877,190 @@ New members become active automatically when they pay the activation fee. Declin
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          MODAL: MOBILE MONEY SMS TOPUP
+          SHEET: MOBILE MONEY SMS CHECKOUT
+          Mirrors the member portal's deposit sheet: cream surface, credit-card
+          tile, serif heading, phone field with icon, 2×2 bundle grid, dark
+          CONFIRM & PAY button.
       ───────────────────────────────────────────────────────────── */}
       {showBuyModal && selectedPack && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(28,25,23,0.75)', backdropFilter: 'blur(6px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 100, padding: 16
-        }}>
-          <div style={{
-            backgroundColor: 'white', borderRadius: 28, width: '100%', maxWidth: 440,
-            boxShadow: '0 24px 60px rgba(0,0,0,0.3)', overflow: 'hidden', border: `1px solid ${T.border}`
-          }}>
-            <div style={{
-              background: `linear-gradient(135deg, ${T.cDeep} 0%, ${T.cRich} 100%)`,
-              padding: '24px 28px', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
-            }}>
-              <div>
-                <h4 style={{ fontWeight: 800, fontSize: 16, margin: 0 }}>Mobile Money SMS Checkout</h4>
-                <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 2, margin: 0 }}>MTN MoMo & Airtel Money Authorized</p>
-              </div>
+        <div
+          onClick={closeBuySheet}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', zIndex: 100,
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'center'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: MOMO.sheet, width: '100%', maxWidth: 400,
+              borderTopLeftRadius: 36, borderTopRightRadius: 36,
+              padding: '36px 28px 24px', animation: 'kunitySmsSheetUp 0.3s ease-out',
+              display: 'flex', flexDirection: 'column',
+              boxShadow: '0 -10px 40px rgba(0,0,0,0.2)',
+              maxHeight: '92vh', overflowY: 'auto'
+            }}
+          >
+            <div style={{ textAlign: 'center', marginBottom: 24, position: 'relative' }}>
               <button
-                onClick={() => {
-                  if (!isProcessingBuy) {
-                    setShowBuyModal(false);
-                    setSelectedPack(null);
-                  }
-                }}
-                style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: 'white', width: 32, height: 32, borderRadius: '50%', cursor: 'pointer' }}
+                onClick={closeBuySheet}
+                disabled={isProcessingBuy}
+                aria-label="Close checkout"
+                style={{ position: 'absolute', top: -16, right: -4, background: 'none', border: 'none', color: '#978673', fontSize: 24, cursor: isProcessingBuy ? 'not-allowed' : 'pointer' }}
               >
-                ✕
+                &times;
               </button>
+              <div style={{
+                width: 52, height: 42, background: MOMO.chip, borderRadius: 12, margin: '0 auto 16px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center'
+              }}>
+                <Smartphone size={22} color={MOMO.accent} />
+              </div>
+              <h3 style={{ fontSize: 22, fontWeight: 700, color: MOMO.ink, margin: '0 0 6px 0', fontFamily: 'serif' }}>
+                Buy SMS Credits
+              </h3>
+              <p style={{ fontSize: 13, color: MOMO.inkSoft, margin: 0 }}>
+                {smsBalance.toLocaleString()} credits left · pay with Mobile Money
+              </p>
             </div>
 
-            <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div style={{ backgroundColor: T.cardWarm, borderRadius: 16, padding: 18, border: `1px solid ${T.border}`, textAlign: 'center' }}>
-                <span style={{ fontSize: 11, color: T.sub, fontWeight: 700, textTransform: 'uppercase' }}>Selected Bundle</span>
-                <div style={{ fontSize: 30, fontWeight: 900, color: T.cDeep, marginTop: 4 }}>
-                  {selectedPack.credits.toLocaleString()} SMS Credits
-                </div>
-                <div style={{ marginTop: 6, fontSize: 14, fontWeight: 800, color: T.gold }}>
-                  Total: {UGX(selectedPack.price)}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 800, color: MOMO.muted, letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}>
+                  Mobile Money Number
+                </label>
+                <div style={{
+                  display: 'flex', alignItems: 'center', background: MOMO.field, borderRadius: 14,
+                  padding: '0 16px', height: 54, border: `1px solid ${MOMO.line}`
+                }}>
+                  <Phone size={18} color={MOMO.muted} />
+                  <input
+                    type="tel"
+                    value={momoNumber}
+                    onChange={(e) => { setMomoNumber(e.target.value); if (buyError) setBuyError(''); }}
+                    placeholder="0772123456"
+                    disabled={isProcessingBuy}
+                    style={{
+                      background: 'transparent', border: 'none', outline: 'none',
+                      width: '100%', padding: '0 12px', fontSize: 16, color: MOMO.ink, fontWeight: 600
+                    }}
+                  />
                 </div>
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase', marginBottom: 6 }}>
-                  Mobile Money Phone Number
+                <label style={{ fontSize: 11, fontWeight: 800, color: MOMO.muted, letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}>
+                  Select a Bundle
                 </label>
-                <input
-                  type="tel"
-                  placeholder="0772000111 / 0702000111"
-                  value={momoNumber}
-                  onChange={(e) => setMomoNumber(e.target.value)}
-                  disabled={isProcessingBuy}
-                  style={{
-                    width: '100%', padding: '12px 14px', borderRadius: 12,
-                    border: `1px solid ${T.border}`, fontSize: 14, outline: 'none'
-                  }}
-                />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  {SMS_BUNDLES.map((pack) => {
+                    const active = selectedPack.credits === pack.credits;
+                    return (
+                      <button
+                        key={pack.credits}
+                        type="button"
+                        onClick={() => setSelectedPack(pack)}
+                        disabled={isProcessingBuy}
+                        style={{
+                          height: 62, borderRadius: 12, fontSize: 15, fontWeight: 700,
+                          cursor: isProcessingBuy ? 'not-allowed' : 'pointer',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1,
+                          background: active ? MOMO.accent : MOMO.field,
+                          color: active ? 'white' : MOMO.ink,
+                          border: active ? 'none' : `1px solid ${MOMO.line}`,
+                          boxShadow: active ? '0 4px 12px rgba(167,108,71,0.3)' : 'none'
+                        }}
+                      >
+                        <span>{pack.credits.toLocaleString()} credits</span>
+                        <span style={{ fontSize: 11, fontWeight: 800, opacity: active ? 0.85 : 0.6 }}>
+                          {UGX(pack.price)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
-              <button
-                onClick={handleBuySms}
-                disabled={isProcessingBuy || !momoNumber.trim()}
-                style={{
-                  padding: '14px', borderRadius: 14,
-                  backgroundColor: T.green, color: 'white', border: 'none',
-                  fontWeight: 800, fontSize: 14, cursor: isProcessingBuy ? 'not-allowed' : 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  boxShadow: `0 6px 18px ${T.green}30`
-                }}
-              >
-                {isProcessingBuy ? (
-                  <>
-                    <Loader2 size={18} className="animate-spin" />
-                    <span>Processing PIN prompt on SIM...</span>
-                  </>
-                ) : (
-                  <span>Authorize UGX {selectedPack.price.toLocaleString()}</span>
-                )}
-              </button>
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '12px 16px', borderRadius: 14, background: MOMO.field, border: `1px dashed ${MOMO.line}`
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: MOMO.inkSoft }}>
+                  {selectedPack.credits.toLocaleString()} SMS credits
+                </span>
+                <span style={{ fontSize: 16, fontWeight: 800, color: MOMO.ink }}>
+                  {UGX(selectedPack.price)}
+                </span>
+              </div>
 
-              <p style={{ fontSize: 11, color: T.ghost, textAlign: 'center', margin: 0 }}>
-                You will receive a mobile prompt asking for your PIN to confirm payment.
-              </p>
+              {buyError && (
+                <div style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 8,
+                  background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 12, padding: '10px 12px'
+                }}>
+                  <AlertCircle size={16} color={MOMO.red} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontSize: 12, color: '#991B1B', lineHeight: 1.45 }}>{buyError}</span>
+                </div>
+              )}
+
+              <div style={{ marginTop: 4 }}>
+                <button
+                  onClick={handleBuySms}
+                  disabled={isProcessingBuy}
+                  style={{
+                    width: '100%', height: 56, borderRadius: 16, background: MOMO.button, color: MOMO.onButton,
+                    fontSize: 14, fontWeight: 800, border: 'none', cursor: isProcessingBuy ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    letterSpacing: '0.05em', opacity: isProcessingBuy ? 0.7 : 1,
+                    boxShadow: '0 8px 16px rgba(43,26,17,0.2)'
+                  }}
+                >
+                  {isProcessingBuy
+                    ? <><Loader2 size={18} className="animate-spin" /> SENDING PIN PROMPT...</>
+                    : <>CONFIRM &amp; PAY <CheckCircle2 size={16} /></>}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeBuySheet}
+                  disabled={isProcessingBuy}
+                  style={{
+                    width: '100%', padding: '16px 0', background: 'none', border: 'none',
+                    fontSize: 12, fontWeight: 800, color: MOMO.muted,
+                    cursor: isProcessingBuy ? 'not-allowed' : 'pointer',
+                    letterSpacing: '0.05em', marginTop: 4
+                  }}
+                >
+                  CANCEL
+                </button>
+              </div>
+
+              <div style={{ textAlign: 'center', fontSize: 11, color: MOMO.muted, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                <span style={{ width: 14, height: 14, borderRadius: '50%', border: `1px solid ${MOMO.muted}`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9 }}>i</span>
+                You will receive a PIN prompt on your phone.
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          OVERLAY: IMMERSIVE MOBILE MONEY PIN PROMPT
+          Same pending → success → failed journey as the member portal.
+      ───────────────────────────────────────────────────────────── */}
+      {renderTopupOverlay()}
+
+      <style>{`
+        @keyframes kunitySmsSheetUp {
+          from { transform: translateY(100%); }
+          to { transform: translateY(0); }
+        }
+        @keyframes kunitySmsPulse {
+          0% { transform: scale(0.9); opacity: 0.8; }
+          50% { transform: scale(1.2); opacity: 0.2; }
+          100% { transform: scale(0.9); opacity: 0.8; }
+        }
+      `}</style>
 
         </main>
       </div>

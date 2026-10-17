@@ -238,6 +238,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ------------------------- GoTrue (auth) ------------------------------
+    // Password / refresh grant, so the app can be exercised in a browser against
+    // this mock (Arena live preview). Every login returns the sacco_admin fixture.
+    if (path === '/auth/v1/token' && method === 'POST') {
+      const grant = url.searchParams.get('grant_type');
+      if (grant === 'password' || grant === 'refresh_token') {
+        const fixture = USERS['token-admin-a'];
+        return json(res, 200, {
+          access_token: 'token-admin-a',
+          token_type: 'bearer',
+          expires_in: 3600,
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          refresh_token: 'refresh-token-admin-a',
+          user: fixture,
+        });
+      }
+      return json(res, 400, { error: 'unsupported_grant_type' });
+    }
     if (path === '/auth/v1/user' && method === 'GET') {
       const user = bearer && USERS[bearer];
       if (!user) return json(res, 401, { message: 'Invalid token' });
