@@ -172,6 +172,19 @@ sentinel secret leaks into the body in any state.
 
 ---
 
+## Member dashboard load (regression)
+
+The member page used to hang forever on its orange spinner: `loading` started as
+`true`, but no `useEffect` ever called `fetchData()`, so only a post-login action
+could clear it. The admin console was unaffected because it did have a mount
+effect. This source-level check pins the mount load, the `try/catch/finally` that
+always clears the spinner, the 30-second bound on the whole load, and the
+actionable error screen ("Dashboard could not load", Try again, Sign out).
+
+```bash
+node test/member-dashboard-load-tests.mjs   # expected: 6 checks passed
+```
+
 ## Money-engine security checks
 
 These target the SMS wallet and NaJiki money paths and complement the broader

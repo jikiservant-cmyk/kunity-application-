@@ -8,7 +8,7 @@ import {
   Eye, EyeOff, Bell, ChevronRight,
   ArrowUpRight, ArrowDownRight,
   Plus, Send, Download, Upload, Shield, Phone, TrendingUp, CheckCircle, LogOut,
-  Loader2, PieChart as PieChartIcon
+  Loader2, PieChart as PieChartIcon, AlertCircle
 } from 'lucide-react';
 import { BarChart, Bar as RechartsBar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -36,6 +36,18 @@ const T = {
   navBg:   "#7C2D12",
   navAct:  "#F97316",
 };
+
+// A dashboard query that never resolves used to leave the page on its spinner
+// forever. Bound the whole load so the member always gets an actionable screen.
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
 
 const UGX  = (n: number | string) => `UGX ${Number(n).toLocaleString("en-UG")}`;
 const UGXM = (n: number | string) => {
@@ -128,6 +140,7 @@ function TxnRow({ t, last }: any) {
 export default function MemberDashboard() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("home");
   const [showBal, setShowBal] = useState(true);
   
@@ -348,17 +361,41 @@ export default function MemberDashboard() {
     );
   };
 
-  const fetchData = async () => {
+  const loadDashboard = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) {
-      router.push('/auth');
+      setLoadError('Your session has expired. Please sign in again.');
+      router.replace('/auth');
       return;
     }
 
     // Skip profiles table for now, just use member data
     setProfile(null);
 
-    const { data: memberData } = await supabase.schema('kunity').from('members').select('*, organization:organizations(name)').eq('id', session.user.id).single();
+    const { data: memberData, error: memberError } = await supabase
+      .schema('kunity')
+      .from('members')
+      .select('*, organization:organizations(name)')
+      .eq('id', session.user.id)
+      .single();
+
+    if (memberError) {
+      // A login without a member row is a real state, not a transient failure:
+      // tell the member what to do instead of rendering an empty dashboard.
+      if (memberError.code === 'PGRST116' || /0 rows/i.test(memberError.message || '')) {
+        setMember(null);
+        setLoadError('Your member profile was not found for this SACCO. Please contact your SACCO admin or register again.');
+        return;
+      }
+      throw new Error(memberError.message || 'Could not load your member profile.');
+    }
+
+    if (!memberData) {
+      setMember(null);
+      setLoadError('Your member profile was not found for this SACCO. Please contact your SACCO admin or register again.');
+      return;
+    }
+
     setMember(memberData);
 
     if (memberData) {
@@ -455,8 +492,31 @@ export default function MemberDashboard() {
       const { data: loanData } = await supabase.schema('kunity').from('loans').select('*, loan_installments(paid_principal, paid_interest)').eq('member_id', memberData.id).order('created_at', { ascending: false });
       setLoans(loanData || []);
     }
-    setLoading(false);
   };
+
+  const fetchData = async () => {
+    try {
+      setLoadError(null);
+      await withTimeout(loadDashboard(), 30_000, 'Loading your dashboard took too long. Please try again.');
+    } catch (error) {
+      console.error('Failed to load the member dashboard:', error);
+      setLoadError(
+        error instanceof Error && error.message.includes('took too long')
+          ? error.message
+          : 'We could not load your dashboard. Check your connection and try again.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load the dashboard once on mount. This effect was missing: loading started
+  // as true and fetchData was only called after an action, so members stayed on
+  // the orange spinner forever.
+  useEffect(() => {
+    void fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleOpenAccount = async (productId: string, productName: string) => {
     setActionLoading(true);
@@ -623,6 +683,51 @@ export default function MemberDashboard() {
     return (
       <div className="h-screen flex items-center justify-center" style={{ backgroundColor: T.bg }}>
         <Loader2 className="w-8 h-8 animate-spin" style={{ color: T.cMid }} />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="h-screen flex items-center justify-center" style={{ backgroundColor: T.bg, padding: 24 }}>
+        <div style={{
+          width: '100%', maxWidth: 420, textAlign: 'center', background: T.card,
+          borderRadius: 22, padding: 28,
+          boxShadow: '0 4px 28px rgba(5,7,26,0.08), 0 1px 6px rgba(5,7,26,0.04)'
+        }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: '50%', background: '#FEF2F2',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px'
+          }}>
+            <AlertCircle size={30} color={T.red} />
+          </div>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, margin: '0 0 10px' }}>
+            Dashboard could not load
+          </h1>
+          <p style={{ fontSize: 14, color: T.sub, lineHeight: 1.6, margin: '0 0 22px' }}>
+            {loadError}
+          </p>
+          <button
+            type="button"
+            onClick={() => { setLoading(true); void fetchData(); }}
+            style={{
+              width: '100%', height: 52, borderRadius: 14, background: T.cMid,
+              color: 'white', fontWeight: 800, border: 'none', cursor: 'pointer', fontSize: 15
+            }}
+          >
+            Try again
+          </button>
+          <button
+            type="button"
+            onClick={async () => { await supabase.auth.signOut(); router.replace('/auth'); }}
+            style={{
+              width: '100%', padding: '14px 0 0', background: 'none', border: 'none',
+              color: T.sub, fontWeight: 700, fontSize: 13, cursor: 'pointer'
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </div>
     );
   }
