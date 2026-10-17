@@ -50,9 +50,10 @@ credits the wallet. Verified by the live-contract suite (31/31).
 - Watch webhook logs on boot: any `NAJIKI_WEBHOOK_SECRET is not configured`
   error line = fix env before continuing.
 
-### 5. Controlled live smoke test (one real purchase, smallest pack)
-1. As the live SACCO admin, buy the **200-credit / UGX 10,000** pack to a
-   phone you control.
+### 5. Controlled live smoke test (one real purchase)
+1. As the live SACCO admin, buy **200 SMS** (priced at 200 × the SACCO's DB-stored
+   `public.wallets.sms_rate`; UGX 10,000 at the default UGX 50/SMS, but always read the
+   total shown by the app before approving) to a phone you control.
 2. Approve the PIN prompt.
 3. Within ~30 s the dashboard confirm poll should show success. Verify:
    - SMS wallet balance +10,000 (200 credits),

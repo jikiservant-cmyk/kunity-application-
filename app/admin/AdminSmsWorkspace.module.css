@@ -803,49 +803,14 @@
   line-height: 1.4;
 }
 
-.bundleGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+.buyForm {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
   margin-top: 14px;
 }
 
-.bundleOption {
-  display: flex;
-  min-width: 0;
-  min-height: 79px;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 3px;
-  padding: 9px 10px;
-  color: #34445c;
-  text-align: left;
-  background: #fff;
-  border: 1px solid #e5eaf2;
-  border-radius: 10px;
-  cursor: pointer;
-  font: inherit;
-  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
-}
-
-.bundleOption:hover {
-  background: #f8fbff;
-  border-color: #9dbef5;
-  box-shadow: 0 4px 12px rgba(38, 90, 171, 0.08);
-  transform: translateY(-1px);
-}
-
-.bundleOptionPopular {
-  background: #f8fbff;
-  border-color: #b6cdf5;
-}
-
-.bundleOptionPopular .bundleTag {
-  color: #3769b5;
-}
-
-.bundleTag {
+.buyLabel {
   color: #8a97a9;
   font-size: 8px;
   font-weight: 700;
@@ -853,25 +818,67 @@
   text-transform: uppercase;
 }
 
-.bundleOption strong {
+.buyRow {
+  display: flex;
+  gap: 8px;
+}
+
+.buyInput {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 44px;
+  padding: 0 12px;
   color: #25354d;
-  font-size: 13px;
-  font-weight: 750;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
+  background: #fff;
+  border: 1px solid #e5eaf2;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
 }
 
-.bundleOption strong small {
-  color: #728198;
-  font-size: 8px;
-  font-weight: 600;
-  letter-spacing: 0;
+.buyInput:focus {
+  outline: 2px solid #9dbef5;
+  outline-offset: 1px;
 }
 
-.bundlePrice {
+.buyInput[aria-invalid='true'] {
+  border-color: #d94a4a;
+}
+
+.buyButton {
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 0 18px;
+  color: #fff;
+  background: #2b1a11;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.buyButton:hover {
+  background: #3a271c;
+}
+
+.buyMeta {
+  margin: 0;
   color: #6d7c91;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
+  line-height: 1.5;
+}
+
+.buyError {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .walletFootnote {

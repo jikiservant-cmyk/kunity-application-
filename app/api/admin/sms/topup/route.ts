@@ -3,7 +3,14 @@ import { createServerClient } from '@supabase/ssr';
 import { paymentGateway } from '@/lib/payments/gateway';
 import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
-import { packForCredits, normalizeUgMomo } from '@/lib/sms-packs';
+import { normalizeUgMomo } from '@/lib/validators';
+import {
+  normalizeSmsCredits,
+  parseSmsRate,
+  smsPriceForCredits,
+  SMS_MIN_CREDITS,
+  SMS_MAX_CREDITS,
+} from '@/lib/sms-bundles';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
 import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
@@ -36,12 +43,14 @@ export async function POST(req: NextRequest) {
     }
 
     // SECURITY (pentest 2026-10-13): the price is never taken from the client.
-    // The client picks a pack by its credit count; the server sets the price.
-    const pack = packForCredits(credits);
-    if (!pack) {
-      return NextResponse.json({ error: 'Invalid credit pack' }, { status: 400 });
+    // The admin enters how many SMS to buy; the server prices it from the
+    // per-SMS rate stored for this SACCO in `public.wallets.sms_rate`.
+    const creditsRequested = normalizeSmsCredits(credits);
+    if (creditsRequested === null) {
+      return NextResponse.json({
+        error: `Enter a whole number of SMS between ${SMS_MIN_CREDITS.toLocaleString()} and ${SMS_MAX_CREDITS.toLocaleString()}.`
+      }, { status: 400 });
     }
-    const amount = pack.price;
 
     const momo = normalizeUgMomo(momoNumber);
     if (!momo) {
@@ -132,6 +141,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Wallet not found for this Sacco. Please contact support.' }, { status: 400 });
     }
 
+    // The price comes from the database, never from the request body. A missing
+    // or invalid rate fails closed: a misconfigured wallet must not sell SMS free.
+    const smsRate = parseSmsRate(wallet.sms_rate);
+    if (smsRate === null) {
+      console.error(`[SMS Topup API] Invalid sms_rate for wallet ${wallet.id}:`, wallet.sms_rate);
+      return NextResponse.json({
+        error: 'SMS pricing is not configured for this SACCO. Please contact support.'
+      }, { status: 503 });
+    }
+
+    const amount = smsPriceForCredits(creditsRequested, smsRate);
+    if (amount === null) {
+      return NextResponse.json({
+        error: 'This top-up amount is outside the allowed range. Contact support if you need a larger bundle.'
+      }, { status: 400 });
+    }
+
     // Fetch tenant code
     let tenantCode = tenantId;
     const { data: tenantData } = await supabaseAdmin.schema('public').from('tenants').select('code').eq('id', tenantId).maybeSingle();
@@ -153,7 +179,7 @@ export async function POST(req: NextRequest) {
       note: 'pending',
       type: 'sms_topup',
       reference: localRef,
-      description: 'Pending SMS topup via Mobile Money'
+      description: `SMS top-up: ${creditsRequested.toLocaleString()} credits at UGX ${smsRate}/SMS`
     });
     if (pendingErr) {
       console.error('[SMS Topup API] Could not record pending topup, no payment requested:', pendingErr);
@@ -293,7 +319,7 @@ export async function POST(req: NextRequest) {
       action: 'create_sms_topup_intent',
       entityType: 'payment_intent',
       entityId: najikiRef,
-      newData: { amount, credits: pack.credits, momoNumber: momo }
+      newData: { amount, credits: creditsRequested, smsRate, momoNumber: momo }
     });
 
     const responseIntent = callbackState === 'pending' ? intent : { ...intent, status: callbackState };
@@ -301,7 +327,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       intent: responseIntent,
-      intentId: najikiRef
+      intentId: najikiRef,
+      // The UI renders the amount the server actually charged, not its own estimate.
+      credits: creditsRequested,
+      amount,
+      smsRate
     });
 
   } catch (err: any) {

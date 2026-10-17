@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import ProductsSettings from './ProductsSettings';
 import AdminOverview, { type AdminConsoleTab } from './AdminOverview';
-import AdminSmsWorkspace, { type AdminSmsBundle, type AdminSmsRecipientType } from './AdminSmsWorkspace';
+import AdminSmsWorkspace, { type AdminSmsRecipientType } from './AdminSmsWorkspace';
 import styles from './AdminConsole.module.css';
 import { 
   Building2, Users, CreditCard, Send, Shield, RefreshCw, LogOut, 
@@ -16,6 +16,12 @@ import {
   ChevronDown, Bell, MessageSquare, Plus, Loader2
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import {
+  normalizeSmsCredits,
+  smsPriceForCredits,
+  SMS_MAX_CREDITS,
+  SMS_MIN_CREDITS,
+} from '@/lib/sms-bundles';
 
 /* ── Admin workspace palette ──────────────────────────────────── */
 const T = {
@@ -42,30 +48,9 @@ const T = {
 
 const UGX = (n: number | string) => `UGX ${Number(n || 0).toLocaleString("en-UG")}`;
 
-// SMS bundles. The price list is authoritative on the server (lib/sms-packs.ts);
-// these are display cards, and the API resolves the price from the credit count.
-const SMS_BUNDLES = [
-  { credits: 200, price: 10000, tag: 'Starter' },
-  { credits: 500, price: 25000, tag: 'Popular' },
-  { credits: 1200, price: 50000, tag: 'Value' },
-  { credits: 3000, price: 100000, tag: 'Corporate' },
-];
-
 // Uganda mobile money: 07XXXXXXXX, 2567XXXXXXXX or +2567XXXXXXXX (spaces/dashes allowed).
 const isValidMomo = (value: string) =>
   /^(?:\+?256|0)7\d{8}$/.test(value.replace(/[\s-]/g, ''));
-
-// Bundle tile styling — copied value-for-value from the member portal's deposit
-// amount grid so the two purchase surfaces are visually identical.
-const bundleButtonStyle = (active: boolean, disabled = false): React.CSSProperties => ({
-  height: 48, borderRadius: 12, fontSize: 15, fontWeight: 700,
-  cursor: disabled ? 'not-allowed' : 'pointer',
-  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0,
-  background: active ? '#A76C47' : '#FCFAEE',
-  color: active ? 'white' : '#3A271C',
-  border: active ? 'none' : '1px solid #EAE0CC',
-  boxShadow: active ? '0 4px 12px rgba(167,108,71,0.3)' : 'none',
-});
 
 type AdminNavigationItem = {
   key: AdminConsoleTab;
@@ -157,7 +142,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Buy SMS State
   const [showBuyModal, setShowBuyModal] = useState(false);
-  const [selectedPack, setSelectedPack] = useState<any>(SMS_BUNDLES[1]);
+  const [buyCredits, setBuyCredits] = useState('500');
   const [momoNumber, setMomoNumber] = useState('');
   const [isProcessingBuy, setIsProcessingBuy] = useState(false);
   // Immersive checkout overlay — same pending → success → failed sequence as the
@@ -169,6 +154,13 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     status: 'pending' | 'success' | 'failed';
     message?: string;
   } | null>(null);
+
+  // No hardcoded packs: the admin types how many SMS to buy and the server
+  // prices them from this SACCO's DB-stored rate (wallets.sms_rate).
+  const parsedBuyCredits = normalizeSmsCredits(Number(buyCredits));
+  const buyCreditsPrice = parsedBuyCredits === null
+    ? null
+    : smsPriceForCredits(parsedBuyCredits, smsRate);
 
   // Loan Underwriting Processing
   const [processingLoanId, setProcessingLoanId] = useState<string | null>(null);
@@ -428,8 +420,8 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
 
   // Buy SMS Bundle Handler — mirrors the member portal checkout:
   // sheet → PIN overlay (pending) → success / failed, no toast-and-close.
-  const openBuySheet = (pack?: AdminSmsBundle) => {
-    if (pack) setSelectedPack(pack);
+  const openBuySheet = (credits?: number) => {
+    if (typeof credits === 'number') setBuyCredits(String(credits));
     setShowBuyModal(true);
   };
 
@@ -439,7 +431,14 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   };
 
   const handleBuySms = async () => {
-    if (!selectedPack) return;
+    if (parsedBuyCredits === null) {
+      alert(`Enter a whole number of SMS between ${SMS_MIN_CREDITS.toLocaleString()} and ${SMS_MAX_CREDITS.toLocaleString()}.`);
+      return;
+    }
+    if (buyCreditsPrice === null) {
+      alert('SMS pricing is unavailable right now. Please contact support.');
+      return;
+    }
 
     if (!momoNumber.trim()) {
       alert('Please provide a phone number');
@@ -465,7 +464,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         body: JSON.stringify({
           token: session.access_token,
           momoNumber: momoNumber,
-          credits: selectedPack.credits,
+          credits: parsedBuyCredits,
           phone: momoNumber,
           organizationId: orgId
         })
@@ -476,8 +475,10 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         // Hand over to the immersive overlay. The sheet closes; the overlay owns
         // the rest of the journey so the admin can see exactly what is happening.
         setTopupPrompt({
-          credits: selectedPack.credits,
-          price: selectedPack.price,
+          // Prefer the server's authoritative numbers; fall back to the local
+          // estimate only if the response omits them.
+          credits: Number(data.credits) || parsedBuyCredits,
+          price: Number(data.amount) || buyCreditsPrice,
           phone: momoNumber.trim(),
           status: 'pending',
         });
@@ -706,12 +707,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
                 </button>
                 <button
                   onClick={() => {
-                    const retry = { credits: topupPrompt.credits, price: topupPrompt.price };
+                    const credits = topupPrompt.credits;
                     const phone = topupPrompt.phone;
                     dismiss();
-                    setSelectedPack(retry);
                     setMomoNumber(phone);
-                    openBuySheet(retry);
+                    openBuySheet(credits);
                   }}
                   style={{
                     flex: 1, height: 50, borderRadius: 14,
@@ -1396,7 +1396,6 @@ New members become active automatically when they pay the activation fee. Declin
             smsLowBalance={smsLowBalance}
             smsRate={smsRate}
             smsHistory={smsHistory}
-            bundles={SMS_BUNDLES}
             smsRecipientType={smsRecipientType}
             onRecipientTypeChange={setSmsRecipientType}
             singleRecipientPhone={singleRecipientPhone}
@@ -1600,7 +1599,7 @@ New members become active automatically when they pay the activation fee. Declin
           2×2 amount grid, CONFIRM & PAY, CANCEL and info line.
           Only the labels and the bundle content differ.
       ───────────────────────────────────────────────────────────── */}
-      {showBuyModal && selectedPack && (
+      {showBuyModal && (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           background: 'rgba(0,0,0,0.5)', zIndex: 100,
@@ -1658,25 +1657,38 @@ New members become active automatically when they pay the activation fee. Declin
               </div>
 
               <div>
-                <label style={{ fontSize: 11, fontWeight: 800, color: '#A5927D', letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}>
-                  Select a Bundle
+                <label
+                  htmlFor="buy-sms-credits"
+                  style={{ fontSize: 11, fontWeight: 800, color: '#A5927D', letterSpacing: '0.05em', marginBottom: 8, display: 'block', textTransform: 'uppercase' }}
+                >
+                  Number of SMS
                 </label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  {SMS_BUNDLES.map((pack) => (
-                    <button
-                      key={pack.credits}
-                      type="button"
-                      onClick={() => setSelectedPack(pack)}
-                      disabled={isProcessingBuy}
-                      style={bundleButtonStyle(selectedPack.credits === pack.credits, isProcessingBuy)}
-                    >
-                      <span>{pack.credits.toLocaleString()} SMS</span>
-                      <span style={{ fontSize: 11, fontWeight: 800, opacity: 0.65 }}>
-                        {UGX(pack.price)}
-                      </span>
-                    </button>
-                  ))}
+                <div style={{
+                  display: 'flex', alignItems: 'center', background: '#FCFAEE', borderRadius: 14,
+                  padding: '0 16px', height: 54, border: '1px solid #EAE0CC'
+                }}>
+                  <input
+                    id="buy-sms-credits"
+                    type="number"
+                    inputMode="numeric"
+                    min={SMS_MIN_CREDITS}
+                    max={SMS_MAX_CREDITS}
+                    step={1}
+                    required
+                    value={buyCredits}
+                    onChange={e => setBuyCredits(e.target.value)}
+                    disabled={isProcessingBuy}
+                    aria-describedby="buy-sms-total"
+                    style={{
+                      background: 'transparent', border: 'none', outline: 'none',
+                      width: '100%', padding: '4px 0', fontSize: 16, color: '#3A271C', fontWeight: 700
+                    }}
+                  />
                 </div>
+                <p id="buy-sms-total" style={{ margin: '8px 2px 0', fontSize: 12, fontWeight: 700, color: '#887563' }}>
+                  {UGX(smsRate)} per SMS
+                  {buyCreditsPrice !== null ? ` · Total ${UGX(buyCreditsPrice)}` : ''}
+                </p>
               </div>
 
               <div style={{ marginTop: 8 }}>

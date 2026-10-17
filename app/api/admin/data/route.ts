@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { apiLimiter } from '@/lib/rate-limit';
 import { LOW_SMS_BALANCE_CREDITS } from '@/lib/sms-alerts';
+import { parseSmsRate } from '@/lib/sms-bundles';
 
 export async function POST(req: NextRequest) {
   try {
@@ -181,11 +182,11 @@ export async function POST(req: NextRequest) {
       
       if (newWallet) {
         walletBalance = parseFloat(newWallet.balance);
-        smsRate = parseFloat(newWallet.sms_rate || 50);
+        smsRate = parseSmsRate(newWallet.sms_rate) ?? 50;
       }
     } else if (walletData) {
       walletBalance = parseFloat(walletData.balance);
-      smsRate = parseFloat(walletData.sms_rate || 50);
+      smsRate = parseSmsRate(walletData.sms_rate) ?? 50;
     }
 
     // 3. Fetch SMS History Logs from DB for this tenant

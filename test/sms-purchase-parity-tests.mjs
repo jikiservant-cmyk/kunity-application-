@@ -11,8 +11,7 @@
  * Run: node test/sms-purchase-parity-tests.mjs
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { SMS_PACKS } from '../lib/sms-packs.ts';
+import { existsSync, readFileSync } from 'node:fs';
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 const admin = read('app/admin/AdminConsole.tsx');
@@ -32,28 +31,23 @@ const check = (name, fn) => {
 
 console.log('SMS purchase parity checks');
 
-// ── 1. The admin bundles must match the server price list exactly ────────────
-const bundleBlock = admin.match(/const SMS_BUNDLES = \[([\s\S]*?)\] as const;/)
-  ?? admin.match(/const SMS_BUNDLES = \[([\s\S]*?)\n\];/);
-check('SMS_BUNDLES is declared in the admin console', () => {
-  assert.ok(bundleBlock, 'SMS_BUNDLES block not found');
+// ── 1. No hardcoded price list: the DB rate is the only price source ─────────
+check('the hardcoded SMS pack/bundle price list is gone', () => {
+  assert.equal(
+    existsSync(new URL('../lib/sms-packs.ts', import.meta.url)),
+    false,
+    'lib/sms-packs.ts still exists'
+  );
+  assert.ok(!admin.includes('SMS_BUNDLES'), 'the admin console still declares a bundle price list');
+  assert.ok(!admin.includes('SMS_PACKS'), 'a hardcoded pack list is still declared');
 });
 
-const adminBundles = [...(bundleBlock?.[1] ?? '').matchAll(
-  /credits:\s*(\d+)\s*,\s*price:\s*(\d+)/g
-)].map((m) => ({ credits: Number(m[1]), price: Number(m[2]) }));
-
-check('the admin bundles are exactly the server price list (no drift, no client-chosen price)', () => {
-  assert.deepEqual(adminBundles, SMS_PACKS.map((p) => ({ credits: p.credits, price: p.price })));
-});
-
-check('bulk bundles never cost more per credit than the smaller ones', () => {
-  let previous = Infinity;
-  for (const b of adminBundles) {
-    const perCredit = b.price / b.credits;
-    assert.ok(perCredit <= previous + 1e-9, `${b.credits} credits cost more per credit than the smaller bundle`);
-    previous = perCredit;
-  }
+check('the admin UI sends a credit count and shows the DB-derived price', () => {
+  assert.match(admin, /normalizeSmsCredits\(Number\(buyCredits\)\)/);
+  assert.match(admin, /smsPriceForCredits\(parsedBuyCredits, smsRate\)/);
+  assert.match(admin, /credits:\s*parsedBuyCredits/);
+  assert.match(admin, /per SMS/);
+  assert.doesNotMatch(admin, /price:\s*\d{3,}/, 'a hardcoded price is still present in the UI');
 });
 
 // ── 2. The admin checkout uses the member portal's visual language ───────────
@@ -67,13 +61,7 @@ const ADMIN_SHEET = admin.slice(
   admin.indexOf('SHEET: MOBILE MONEY SMS CHECKOUT'),
   admin.indexOf('</form>', admin.indexOf('SHEET: MOBILE MONEY SMS CHECKOUT'))
 );
-// The 2x2 tile style is shared by the tab card and the sheet, so it lives in a
-// module-scope helper rather than inline. Its values are still the member sheet's.
-const ADMIN_TILE_HELPER = admin.slice(
-  admin.indexOf('const bundleButtonStyle'),
-  admin.indexOf('export default function AdminConsole')
-);
-const ADMIN_DESIGN = ADMIN_SHEET + ADMIN_TILE_HELPER;
+const ADMIN_DESIGN = ADMIN_SHEET;
 
 check('the admin sheet carries the member deposit sheet colours verbatim', () => {
   for (const colour of ['#F3E8D5', '#EAE0CC', '#A76C47', '#3A271C', '#887563', '#FCFAEE', '#A5927D', '#2B1A11', '#FCFAEE']) {
@@ -89,8 +77,6 @@ check('the admin sheet carries the member deposit sheet metrics verbatim', () =>
     'padding: \'36px 28px 24px\'',
     "boxShadow: '0 -10px 40px rgba(0,0,0,0.2)'",
     'height: 54',
-    'height: 48',
-    'borderRadius: 12',
     'height: 56',
     'borderRadius: 16',
     "letterSpacing: '0.05em'",
@@ -111,9 +97,11 @@ check('the old gradient-header checkout modal is gone', () => {
   assert.ok(!admin.includes('Authorize UGX'), 'old checkout button still present');
 });
 
-check('the sheet has the member field-with-icon, bundle grid and dark confirm button', () => {
+check('the sheet has the member field-with-icon, a free quantity field and the dark confirm button', () => {
   assert.match(ADMIN_SHEET, /<Phone size=\{18\} color="#A5927D" \/>/);
-  assert.match(ADMIN_SHEET, /gridTemplateColumns: '1fr 1fr', gap: 10/);
+  assert.match(ADMIN_SHEET, /type="number"/);
+  assert.match(ADMIN_SHEET, /min=\{SMS_MIN_CREDITS\}/);
+  assert.match(ADMIN_SHEET, /per SMS/);
   assert.match(ADMIN_SHEET, /\{isProcessingBuy \? 'PROCESSING\.\.\.' : 'CONFIRM & PAY'\} <CheckCircle2 size=\{16\} \/>/);
   assert.match(ADMIN_SHEET, /You will receive a PIN prompt on your phone\./);
   assert.match(ADMIN_SHEET, />\s*CANCEL\s*</);
@@ -176,7 +164,7 @@ check('the admin purchase still posts credits only (never a client-chosen price)
   const bodyEnd = admin.indexOf('})', bodyStart);
   assert.ok(call > -1 && bodyStart > -1 && bodyEnd > bodyStart, 'could not locate the top-up request body');
   const body = admin.slice(bodyStart, bodyEnd);
-  assert.match(body, /credits:\s*selectedPack\.credits/);
+  assert.match(body, /credits:\s*parsedBuyCredits/);
   assert.ok(!/price:/.test(body), 'the client sent a price to the server');
 });
 

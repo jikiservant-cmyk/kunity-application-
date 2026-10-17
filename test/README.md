@@ -137,18 +137,18 @@ persists a key.
 
 ## SMS purchase parity (admin ↔ member)
 
-The admin SMS checkout is a value-for-value copy of the member portal's **deposit**
-sheet (`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px
-top radius, 52×42 tile with serif heading, phone field with icon, 2×2 selectable grid,
-dark CONFIRM & PAY, CANCEL and the circle-i info line — followed by the same immersive
-pending → success → failed PIN overlay. Only the labels and the bundle content differ.
-These checks assert the shared colours and metrics against the member sheet itself, so
-the two flows cannot drift apart, and assert the displayed bundle prices against the
-server list in `lib/sms-packs.ts` (the API re-derives the price from the credit count,
-so a mismatch would show one price and charge another).
+The admin SMS checkout keeps the member portal's **deposit** sheet shell
+(`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px top
+radius, 52×42 tile with serif heading, phone field with icon, dark CONFIRM & PAY,
+CANCEL and the circle-i info line — followed by the same immersive pending → success →
+failed PIN overlay. There is no fixed bundle grid: the admin enters how many SMS to
+buy, and the server prices them from the SACCO's DB-stored per-SMS rate
+(`public.wallets.sms_rate`, via `lib/sms-bundles.ts`). The checks assert the shared
+colours and metrics against the member sheet, that no hardcoded pack/price list exists,
+and that the client sends only a credit count (never a price).
 
 ```bash
-node test/sms-purchase-parity-tests.mjs   # expected: 15/15 checks passed
+node test/sms-purchase-parity-tests.mjs   # expected: 16/16 checks passed
 ```
 
 ## Deployment health probe

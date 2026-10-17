@@ -59,7 +59,7 @@ await check('Kunity sends the exact NaJiki create-payment contract', async () =>
   assert.equal(sent.paymentTypeCode, 'BUY_SMS');
   assert.equal(sent.externalEntityId, TENANT_ID, 'externalEntityId must be the Kunity tenant id the webhook checks');
   assert.equal(sent.tenantCode, TENANT_CODE, 'NaJiki resolves tenants by code, not by uuid');
-  assert.equal(sent.amount, 10000, 'the 200-credit pack is UGX 10,000 server-side');
+  assert.equal(sent.amount, 10000, '200 credits at the DB rate of UGX 50 is UGX 10,000, server-side');
   assert.equal(sent.currency, 'UGX');
   assert.equal(sent.phoneNumber, '+256772123456');
   assert.ok(sent.idempotencyKey.length >= 8);
@@ -158,17 +158,14 @@ await check('the purchase is recorded in payment_requests as BUY_SMS', async () 
   assert.equal(rows[0].member_id, null, 'an SMS top-up is an organization purchase, not a member payment');
 });
 
-await check('all four server packs are sent at their configured price', async () => {
-  for (const pack of [
-    { credits: 200, price: 10000 },
-    { credits: 500, price: 25000 },
-    { credits: 1200, price: 50000 },
-    { credits: 3000, price: 100000 },
-  ]) {
+await check('any whole SMS quantity is priced from the DB rate, not a hardcoded pack list', async () => {
+  for (const credits of [200, 500, 1200, 3000]) {
     await resetDatabase();
-    const response = await callTopup(buy(pack.credits));
-    assert.equal(response.status, 200, `${pack.credits} credits: ${JSON.stringify(response.body)}`);
-    assert.equal((await latestIntent()).amount, pack.price, `${pack.credits} credits`);
+    const response = await callTopup(buy(credits));
+    assert.equal(response.status, 200, `${credits} credits: ${JSON.stringify(response.body)}`);
+    assert.equal((await latestIntent()).amount, credits * 50, `${credits} credits x UGX 50`);
+    assert.equal(response.body.credits, credits, 'the response reports the server-priced credit count');
+    assert.equal(response.body.amount, credits * 50, 'the response reports the server-priced amount');
   }
 });
 await resetDatabase();
@@ -176,7 +173,7 @@ await callTopup();
 
 // ── 3. The real NaJiki notification credits the SACCO SMS wallet ─────────────
 console.log('\nWebhook: NaJiki success notification');
-await check('a correctly signed success notification credits exactly the pack price', async () => {
+await check('a correctly signed success notification credits exactly the amount charged', async () => {
   const intent = await latestIntent();
   const before = Number((await wallet()).balance);
   const result = await deliverNajikiWebhook(intent, 'success');
