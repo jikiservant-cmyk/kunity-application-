@@ -120,6 +120,21 @@ not for success; judge them against a real Supabase project.
 
 ---
 
+## Application API key — developer-only
+
+The tenant application API key is the bearer credential for `POST /api/messaging/send`.
+It is never shown or rotatable in the admin portal; the admin route was removed and the
+data endpoint no longer returns the key or even a presence flag. Provisioning is out of
+band with `npm run rotate-api-key -- ...` (see `docs/security/api-key-provisioning.md`).
+
+```bash
+node test/api-key-developer-only-tests.mjs   # expected: 14/14 checks passed
+```
+
+The suite covers the whole surface (UI state, admin routes, data payload, gateway digest
+auth) and asserts the developer CLI hashes identically to `lib/api-keys.ts` and never
+persists a key.
+
 ## SMS purchase parity (admin ↔ member)
 
 The admin SMS checkout is a value-for-value copy of the member portal's **deposit**

@@ -102,9 +102,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [orgId, setOrgId] = useState('');
   const [allOrganizations, setAllOrganizations] = useState<any[]>([]);
   const [showOrgDropdown, setShowOrgDropdown] = useState(false);
-  const [apiKey, setApiKey] = useState('');
-  const [apiKeySet, setApiKeySet] = useState(false);
-  const [rotatingKey, setRotatingKey] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [joinLink, setJoinLink] = useState('');
   const [joinCodeBusy, setJoinCodeBusy] = useState(false);
@@ -191,36 +188,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
     return 'Good evening';
   }, []);
 
-  // SMS gateway API key: rotating issues a new key and invalidates the old one.
-  // The key is shown once in this session; it is never loaded again.
-  const rotateApiKey = async () => {
-    if (apiKeySet && !window.confirm('Rotating the API key stops the current key working immediately. Continue?')) {
-      return;
-    }
-    try {
-      setRotatingKey(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      const res = await fetch('/api/admin/api-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: session.access_token, organizationId: orgId || undefined }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setApiKey(data.apiKey);
-        setApiKeySet(true);
-        setToastMessage({ type: 'success', text: 'New API key issued. Copy it now; it will not be shown again.' });
-      } else {
-        setToastMessage({ type: 'error', text: data.error || 'Could not rotate the API key' });
-      }
-    } catch {
-      setToastMessage({ type: 'error', text: 'Could not rotate the API key' });
-    } finally {
-      setRotatingKey(false);
-    }
-  };
-
   // Member join link (Settings tab). action: 'get' | 'regenerate'.
   const loadJoinCode = async (action: 'get' | 'regenerate' = 'get') => {
     try {
@@ -289,8 +256,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         setOrgId(data.orgId);
         setSaccoName(data.saccoName || 'K-Unity SACCO');
         setTenantCode(data.tenantCode || 'kunity');
-        setApiKey(data.apiKey || '');
-        setApiKeySet(!!data.apiKeySet);
         setAllOrganizations(data.allOrganizations || []);
         setStats(data.stats || {});
         setMembers(data.members || []);
@@ -1619,7 +1584,7 @@ New members become active automatically when they pay the activation fee. Declin
         )}
 
         {/* ───────────────────────────────────────────────────────────
-            TAB 6: TENANT CONFIGURATION & API KEYS
+            TAB 6: TENANT CONFIGURATION & MEMBER JOIN
         ─────────────────────────────────────────────────────────── */}
         {activeTab === 'tenant' && (
           <div style={{ backgroundColor: T.card, borderRadius: 24, padding: 32, border: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -1629,7 +1594,7 @@ New members become active automatically when they pay the activation fee. Declin
                 <span>Tenant Isolation & Cooperative Settings</span>
               </h3>
               <p style={{ fontSize: 13, color: T.sub, marginTop: 4, margin: 0 }}>
-                Technical identifiers, database schema partitioning, and cryptographic API tokens.
+                Technical identifiers, database schema partitioning, and the member join link.
               </p>
             </div>
 
@@ -1681,54 +1646,6 @@ New members become active automatically when they pay the activation fee. Declin
                 <span style={{ fontSize: 11, color: T.green, marginTop: 2 }}>Mobile money integrated</span>
               </div>
 
-            </div>
-
-            {/* API Key Box */}
-            <div style={{ backgroundColor: '#FAF9F6', borderRadius: 18, padding: 22, border: `1px solid ${T.border}` }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: T.sub, textTransform: 'uppercase' }}>
-                Tenant Application API Secret Key
-              </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-                <input
-                  type="text"
-                  readOnly
-                  value={apiKey || (apiKeySet ? "•••••••• key is set (hidden) — rotate to issue a new one" : "No API key yet — rotate to issue one")}
-                  style={{
-                    flex: 1, padding: '12px 16px', borderRadius: 12,
-                    backgroundColor: 'white', border: `1px solid ${T.border}`,
-                    fontFamily: 'monospace', fontSize: 13, color: T.text
-                  }}
-                />
-                <button
-                  disabled={!apiKey}
-                  onClick={() => {
-                    navigator.clipboard.writeText(apiKey || "");
-                    setToastMessage({ type: 'success', text: 'API Key copied to clipboard!' });
-                  }}
-                  style={{
-                    padding: '12px 18px', borderRadius: 12,
-                    backgroundColor: T.cDeep, color: 'white',
-                    border: 'none', fontWeight: 800, fontSize: 13, cursor: 'pointer'
-                  }}
-                >
-                  Copy Key
-                </button>
-                <button
-                  onClick={rotateApiKey}
-                  disabled={rotatingKey}
-                  style={{
-                    padding: '12px 18px', borderRadius: 12,
-                    backgroundColor: 'white', color: T.cDeep,
-                    border: `1px solid ${T.border}`, fontWeight: 800, fontSize: 13,
-                    cursor: rotatingKey ? 'wait' : 'pointer'
-                  }}
-                >
-                  {rotatingKey ? 'Rotating…' : (apiKeySet ? 'Rotate Key' : 'Issue Key')}
-                </button>
-              </div>
-              <p style={{ fontSize: 11, color: T.ghost, marginTop: 8, margin: 0 }}>
-                Use this API key for integrating external core-banking webhooks or automated SMS dispatch gateways.
-              </p>
             </div>
 
           </div>

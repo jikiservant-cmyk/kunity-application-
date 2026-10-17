@@ -146,24 +146,17 @@ export async function POST(req: NextRequest) {
 
     const { data: tenantData } = await supabaseAdmin
       .from('tenants')
-      .select('name, code, application_id')
+      .select('name, code')
       .eq('id', orgId)
       .maybeSingle();
 
     const saccoName = kunityOrg?.name || tenantData?.name || 'SaccoConnect';
     const tenantCode = kunityOrg?.code || tenantData?.code || saccoName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     
-    // SECURITY (pentest 2026-10-13): the API key is never returned again. Only whether one
-    // exists is shown; rotating (POST /api/admin/api-key) issues a new key once.
-    let apiKeySet = false;
-    if (tenantData?.application_id) {
-      const { data: appData } = await supabaseAdmin
-        .from('applications')
-        .select('api_key_hash')
-        .eq('id', tenantData.application_id)
-        .maybeSingle();
-      apiKeySet = !!appData?.api_key_hash;
-    }
+    // SECURITY: the tenant application API key is developer-only. It is never
+    // returned to an admin (not the key, not even whether one is set), and admins
+    // can no longer rotate it. Provisioning/rotation is out of band — see
+    // scripts/rotate-api-key.mjs, run by a developer with the service-role key.
 
     // 2. Fetch SMS Wallet Balance from Sacco Wallets (public.wallets)
     let walletBalance = 0;
@@ -319,8 +312,6 @@ export async function POST(req: NextRequest) {
       orgId,
       saccoName,
       tenantCode,
-      apiKey: '',
-      apiKeySet,
       allOrganizations: allOrgs,
       currentOrganization: kunityOrg || { id: orgId, name: saccoName, code: tenantCode },
       stats: {
