@@ -71,7 +71,13 @@ check('LivePay webhook is disabled (410) and its provider file is removed', () =
 check('admin dashboard reports low SMS balance and shows a warning', () => {
   assert.match(read('app/api/admin/data/route.ts'), /smsLowBalance: walletBalance < smsRate \* LOW_SMS_BALANCE_CREDITS/);
   assert.equal(LOW_SMS_BALANCE_CREDITS, 50);
-  assert.match(read('app/admin/AdminConsole.tsx'), /role="alert"[\s\S]{0,200}Low SMS balance/);
+  // The console reads the flag from the API and forwards it to the overview panel,
+  // which renders the announced (role="alert") low-balance notice.
+  assert.match(read('app/admin/AdminConsole.tsx'), /setSmsLowBalance\(!!data\.smsLowBalance\)/);
+  assert.match(read('app/admin/AdminConsole.tsx'), /smsLowBalance=\{smsLowBalance\}/);
+  const overview = read('app/admin/AdminOverview.tsx');
+  assert.match(overview, /smsLowBalance &&/);
+  assert.match(overview, /role="alert"[\s\S]{0,200}(SMS|sms)[\s\S]{0,80}(running low|balance)/);
 });
 
 console.log(`\n${passed} checks passed`);

@@ -4,6 +4,8 @@ import { paymentGateway } from '@/lib/payments/gateway';
 import crypto from 'crypto';
 import { logAudit } from '@/lib/audit-logger';
 import { packForCredits, normalizeUgMomo } from '@/lib/sms-packs';
+import { paymentIntentLimiter } from '@/lib/rate-limit';
+import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,7 +23,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const body = await req.json();
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
     const { token, credits, momoNumber } = body;
 
     if (!token) {
@@ -65,6 +72,17 @@ export async function POST(req: NextRequest) {
 
     if (!tenantId) {
       return NextResponse.json({ error: 'Unauthorized: Admin is not associated with any tenant' }, { status: 400 });
+    }
+
+    // SECURITY (pentest 2026-10-17): this is the only mobile-money entry point for
+    // the admin console, and it had no throttling. A compromised admin token could
+    // otherwise trigger unlimited mobile-money collections (PIN prompts on the
+    // payer's phone) and fill the ledger with pending rows. Per administrator,
+    // mirroring /api/payments/intent.
+    try {
+      await paymentIntentLimiter.check(15, `sms_topup:${user.id}`);
+    } catch {
+      return NextResponse.json({ error: 'Rate limit exceeded for SMS top-ups. Please wait a minute.' }, { status: 429 });
     }
 
     // Retrieve tenant wallet from public.wallets (Sacco schema)
@@ -158,7 +176,20 @@ export async function POST(req: NextRequest) {
       // The pending row stays. If NaJiki did take a payment, its webhook or the confirm route
       // still credits it. A pending row with no NaJiki payment credits nothing.
       console.error('[SMS Topup API] NaJiki payment request failed:', gatewayErr?.message);
-      return NextResponse.json({ error: `Mobile money request failed: ${gatewayErr?.message || 'NaJiki unavailable'}` }, { status: 502 });
+      const gatewayMessage = gatewayErr?.message || 'NaJiki unavailable';
+      // BUY_SMS is a platform fee in NaJiki's PLATFORM_FEE_TYPES, so it is exempt
+      // from the per-tenant credential rule. Seeing that rule fire for this
+      // route means NaJiki has no BUY_SMS payment type row for the application:
+      // the code resolved to null and the purchase was treated as tenant money.
+      // Say so, otherwise the operator goes hunting for SACCO credentials that
+      // are not the problem. Intent creation failed, so nothing was collected.
+      const missingPlatformPaymentType =
+        /no active credentials configured/i.test(gatewayMessage)
+        && /requires per-tenant credentials/i.test(gatewayMessage);
+      const error = missingPlatformPaymentType
+        ? `${gatewayMessage} — NaJiki has no BUY_SMS payment type for this application, so the purchase was treated as a tenant collection. Add BUY_SMS in NaJiki Setup. No money was taken.`
+        : gatewayMessage;
+      return NextResponse.json({ error: `Mobile money request failed: ${error}` }, { status: 502 });
     }
 
     // Link the ledger row to NaJiki's reference: the webhook and the confirm route look the top-up
@@ -220,6 +251,42 @@ export async function POST(req: NextRequest) {
       console.error('[SMS Topup API] payment_requests row not written (top-up continues, credit unaffected):', prErr, { najikiRef });
     }
 
+    // NaJiki versions before the fail-closed payment-type guard (patched in
+    // najiki-finance2 branch arena/016d07ac-buy-sms-hardening) accepted BUY_SMS
+    // without a registered payment type and booked the payment as a TENANT
+    // collection — platform fee money settling in the SACCO's provider float
+    // while everything looked healthy here. Detect that classification through
+    // the status endpoint and refuse loudly. On a misclassification the wallet
+    // still credits via the webhook if the payer approves the prompt, so the
+    // message tells the operator NOT to retry blindly. A failed status lookup
+    // must never block the purchase — the payment exists at NaJiki.
+    if (callbackState === 'pending') {
+      try {
+        const apiUrl = normalizeNajikiBaseUrl(process.env.NAJIKI_API_URL || 'https://najiki.netlify.app');
+        const classificationRes = await fetch(
+          `${apiUrl}/api/payments/${encodeURIComponent(najikiRef)}?tenantCode=${encodeURIComponent(tenantCode)}`,
+          { headers: { Authorization: `Bearer ${process.env.NAJIKI_API_KEY || ''}` } },
+        );
+        if (classificationRes.ok) {
+          const classification = await classificationRes.json();
+          if ('paymentType' in classification && classification.paymentType?.code !== 'BUY_SMS') {
+            const explanation =
+              'NaJiki accepted the payment but did not register it as an SMS platform fee ' +
+              '(no BUY_SMS payment type exists for the application) — it was requested as a ' +
+              'TENANT collection instead. If your phone confirmed the debit, the SMS credits ' +
+              'will still arrive automatically; register BUY_SMS in NaJiki Setup before retrying.';
+            console.error(`[SMS Topup API] ${explanation}`, { najikiRef });
+            return NextResponse.json(
+              { error: `Mobile money request was not accepted as an SMS purchase: ${explanation}` },
+              { status: 502 },
+            );
+          }
+        }
+      } catch (classificationErr) {
+        console.warn('[SMS Topup API] Could not verify NaJiki payment classification:', classificationErr);
+      }
+    }
+
     await logAudit(supabaseAdmin, {
       adminId: user.id,
       tenantId: tenantId,
@@ -239,6 +306,7 @@ export async function POST(req: NextRequest) {
 
   } catch (err: any) {
     console.error('Error initiating SMS wallet topup:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    // SECURITY: never reflect internal error text (SQL details, file paths) to the client.
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

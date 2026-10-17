@@ -7,7 +7,8 @@
     "build": "NODE_OPTIONS='--max-old-space-size=2048' NEXT_IGNORE_INCORRECT_LOCKFILE=1 NODE_ENV=production next build --webpack",
     "start": "next start -p ${PORT:-3000}",
     "lint": "ESLINT_USE_FLAT_CONFIG=false eslint .",
-    "clean": "next clean"
+    "clean": "next clean",
+    "rotate-api-key": "node scripts/rotate-api-key.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

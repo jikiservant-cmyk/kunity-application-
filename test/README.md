@@ -95,6 +95,83 @@ Exit code is non-zero if any check fails, so it can be wired into CI.
 
 ---
 
+## Migration re-apply (idempotency) suite
+
+Answers an operational question rather than a product one: *can the migration folder be applied
+twice?* Applies migrations `21`+ to a real PostgreSQL engine (PGlite) two times and fails if the
+second pass breaks anything the first pass survived — the class of bug that fires when a deploy
+pipeline retries, an operator re-runs the SQL, or a fresh environment is provisioned from the same
+folder.
+
+```bash
+node test/migrations-reapply-tests.mjs   # expected: 8/8 checks passed
+```
+
+It also asserts the hardened objects survive the double apply: the 4-arg and rolling 3-arg
+`refund_sms_wallet` signatures, `wallet_transactions.sms_refund_debit_id`, the currency-normalizing
+`kunity.process_najiki_webhook` wrapper delegating to
+`process_najiki_webhook_pre_currency_hardening`, and the migration-33 payment-request/member
+composite foreign key.
+
+Migrations `23`, `29` and `31` cannot run on the minimal pentest harness because it deliberately
+omits `public.admin_profiles`, the `auth` schema and `public.applications`. They are listed in
+`HARNESS_BASELINE` inside the suite and are checked for *unchanged* failures across both passes,
+not for success; judge them against a real Supabase project.
+
+---
+
+## Application API key — developer-only
+
+The tenant application API key is the bearer credential for `POST /api/messaging/send`.
+It is never shown or rotatable in the admin portal; the admin route was removed and the
+data endpoint no longer returns the key or even a presence flag. Provisioning is out of
+band with `npm run rotate-api-key -- ...` (see `docs/security/api-key-provisioning.md`).
+
+```bash
+node test/api-key-developer-only-tests.mjs   # expected: 14/14 checks passed
+```
+
+The suite covers the whole surface (UI state, admin routes, data payload, gateway digest
+auth) and asserts the developer CLI hashes identically to `lib/api-keys.ts` and never
+persists a key.
+
+## SMS purchase parity (admin ↔ member)
+
+The admin SMS checkout is a value-for-value copy of the member portal's **deposit**
+sheet (`app/member/page.tsx`, `activeModal === 'deposit'`): same cream surface, 36px
+top radius, 52×42 tile with serif heading, phone field with icon, 2×2 selectable grid,
+dark CONFIRM & PAY, CANCEL and the circle-i info line — followed by the same immersive
+pending → success → failed PIN overlay. Only the labels and the bundle content differ.
+These checks assert the shared colours and metrics against the member sheet itself, so
+the two flows cannot drift apart, and assert the displayed bundle prices against the
+server list in `lib/sms-packs.ts` (the API re-derives the price from the credit count,
+so a mismatch would show one price and charge another).
+
+```bash
+node test/sms-purchase-parity-tests.mjs   # expected: 15/15 checks passed
+```
+
+## Deployment health probe
+
+`app/api/health/route.ts` answers "is this deployment actually wired up?" in one request.
+It exists because every Supabase client in the app falls back to
+`https://demo-placeholder.supabase.co` when its env vars are missing, so a half-configured
+production deployment boots normally, serves the login page, and only fails when someone
+tries to sign in.
+
+```bash
+node_modules/.bin/tsx test/health-probe-tests.mjs   # expected: 11 passed
+curl -s https://<your-origin>/api/health            # 200 ok / 503 degraded / 503 not_ready
+```
+
+The probe returns presence **booleans only** — never a secret value, prefix or hash — and
+names the misconfigurations that matter at launch (placeholder credentials, missing
+service-role key, missing `NAJIKI_WEBHOOK_SECRET`, webhook secret equal to the API key,
+in-memory rate limiting, missing Inngest key, missing `APP_URL`). The suite asserts that no
+sentinel secret leaks into the body in any state.
+
+---
+
 ## Money-engine security checks
 
 These target the SMS wallet and NaJiki money paths and complement the broader
@@ -114,7 +191,33 @@ node_modules/.bin/tsx test/payment-intent-currency-tests.mjs
 # Adversarial regression checks; former exploit cases must now be refused.
 node test/money-engine-adversarial-tests.mjs
 node_modules/.bin/tsx test/money-engine-webhook-adversarial-tests.mjs
+
+# Admin SMS purchase against a simulator transcribed from the real NaJiki
+# source (create-payment rules, webhook envelope, status endpoint).
+# Expected: 31 checks passed.
+node_modules/.bin/tsx test/sms-purchase-najiki-live-contract-tests.mjs
+
+# Penetration test of the SMS purchase path: forged/replayed webhooks,
+# cross-tenant confirm attacks, rogue-gateway payloads, races, SQL depth,
+# and purchase rate limiting. Expected: 55 checks passed.
+node_modules/.bin/tsx test/sms-purchase-pentest-tests.mjs
 ```
+
+All three SMS purchase suites share `lib/sms-purchase-harness.mjs` (PGlite +
+migrations 21–37, NaJiki simulator, Supabase REST/RPC stand-in). The simulator
+also models the hardened NaJiki contract (fail-closed payment types) from the
+patch in `../docs/security/najiki-buy-sms-hardening.patch`. See
+`../docs/security/sms-purchase-najiki-verification-2026-10-17.md` and
+`../docs/security/sms-purchase-pentest-2026-10-17.md`.
+
+The NaJiki contract suite runs the real top-up, confirm and webhook handlers
+against PGlite with migrations 21–37. It reproduces the two consequences of a
+NaJiki deployment without a `BUY_SMS` payment type (refused when the SACCO has no
+tenant credentials; silently booked as a tenant collection when it does), then
+verifies the full purchase, signed success, retry, failure, signature/replay
+rejections, amount/currency/tenant guards, the create-response race, and the
+dashboard's confirm poll. See
+`../docs/security/sms-purchase-najiki-verification-2026-10-17.md`.
 
 The SQL adversarial suite applies the actual migrations in PGlite and verifies
 amount drift, wrong transaction direction, unbacked/duplicate refunds, nested

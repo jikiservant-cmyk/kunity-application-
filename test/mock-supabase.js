@@ -238,6 +238,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ------------------------- GoTrue (auth) ------------------------------
+    // Password / refresh grant, so the app can be exercised in a browser against
+    // this mock (Arena live preview). Every login returns the sacco_admin fixture.
+    if (path === '/auth/v1/token' && method === 'POST') {
+      const grant = url.searchParams.get('grant_type');
+      if (grant === 'password' || grant === 'refresh_token') {
+        const fixture = USERS['token-admin-a'];
+        return json(res, 200, {
+          access_token: 'token-admin-a',
+          token_type: 'bearer',
+          expires_in: 3600,
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+          refresh_token: 'refresh-token-admin-a',
+          user: fixture,
+        });
+      }
+      return json(res, 400, { error: 'unsupported_grant_type' });
+    }
     if (path === '/auth/v1/user' && method === 'GET') {
       const user = bearer && USERS[bearer];
       if (!user) return json(res, 401, { message: 'Invalid token' });
@@ -248,6 +265,10 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse((await readBody(req)) || '{}');
       requestLog.push({ method: 'AUTH_ADMIN_UPDATE_USER', path, body });
       return json(res, 200, { id: path.split('/').pop(), ...body });
+    }
+    if (path === '/auth/v1/health' && method === 'GET') {
+      // Faithful to a real Supabase project: the auth health endpoint answers 200.
+      return json(res, 200, { version: 'mock-gotrue', name: 'GoTrue', description: 'mock' });
     }
     if (path.startsWith('/auth/v1/')) {
       return json(res, 404, { message: 'not implemented in mock' });
