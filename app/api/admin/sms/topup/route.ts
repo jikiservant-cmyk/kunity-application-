@@ -15,7 +15,7 @@ import {
   SMS_MAX_CREDITS,
 } from '@/lib/sms-bundles';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
-import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
+import { normalizeNajikiBaseUrl, resolveNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function POST(req: NextRequest) {
   try {
@@ -335,7 +335,7 @@ export async function POST(req: NextRequest) {
     // must never block the purchase — the payment exists at NaJiki.
     if (callbackState === 'pending') {
       try {
-        const apiUrl = normalizeNajikiBaseUrl(process.env.NAJIKI_API_URL || 'https://najiki.netlify.app');
+        const apiUrl = resolveNajikiBaseUrl();
         const classificationRes = await fetch(
           `${apiUrl}/api/payments/${encodeURIComponent(najikiRef)}?tenantCode=${encodeURIComponent(tenantCode)}`,
           { headers: { Authorization: `Bearer ${process.env.NAJIKI_API_KEY || ''}` } },

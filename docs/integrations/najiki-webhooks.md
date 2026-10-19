@@ -32,6 +32,23 @@ The current NaJiki seed uses the placeholder webhook path
 application's real base URL and webhook path in NaJiki before expecting any
 callbacks to arrive.
 
+## Deployment origin
+
+`NAJIKI_API_URL` must be the origin of the deployment that actually serves the
+API, with no trailing slash and no `/api` suffix — Kunity appends `/api/payments`
+itself. The current live deployment is **`https://najiki.vercel.app`**.
+
+There is no hardcoded fallback. If the variable is missing, Kunity's money paths
+throw a configuration error before contacting anyone rather than guessing an
+origin. This matters: the old `najiki.netlify.app` deployment is stale and answers
+API paths with an HTML login page, so a fallback to it made every deposit fail
+with `NaJiki gateway error (Status 500). Response: <!DOCTYPE html>…`.
+
+A configured URL is not proof of health. `GET /api/health` probes
+`{NAJIKI_API_URL}/api/health` and reports `najikiReachable` / `najikiVersion`,
+degrading to HTTP 503 when the origin does not answer with JSON. NaJiki itself
+returns `{"status":"ok",...}` when its database and cache are up.
+
 ## Payment API calls
 
 Kunity sends:
