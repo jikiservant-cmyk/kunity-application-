@@ -3,7 +3,7 @@ import { activationBlockReason } from '@/lib/activation-guard';
 import crypto from 'crypto';
 import { createServerClient } from '@supabase/ssr';
 import { paymentIntentLimiter } from '@/lib/rate-limit';
-import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
+import { najikiHostLabel, resolveNajikiBaseUrl, NajikiConfigError } from '@/lib/najiki-url';
 
 // SECURITY: CORS allowlist. Never reflect an arbitrary caller-supplied Origin —
 // origin reflection lets any website execute authenticated cross-origin requests.
@@ -265,10 +265,10 @@ export async function POST(req: Request) {
       }
     }
 
-    const najikiUrl = process.env.NAJIKI_API_URL;
-    if (!najikiUrl) {
-      throw new Error("NAJIKI_API_URL is missing in environment variables");
-    }
+    // No default origin. A missing/malformed NAJIKI_API_URL must fail here, before
+    // any payment request is made, rather than silently reaching a stale host.
+    const baseUrl = resolveNajikiBaseUrl();
+    const najikiHost = najikiHostLabel(baseUrl);
 
     // 3. Map Kunity's context to NaJiki's expected payload structure
     const najikiPayload = {
@@ -287,26 +287,57 @@ export async function POST(req: Request) {
       }
     };
 
-    // Normalize the origin so a configured trailing slash cannot produce a //api path.
-    const baseUrl = normalizeNajikiBaseUrl(najikiUrl);
-
     // 4. Send the request to NaJiki using the secure API key
-    const response = await fetch(`${baseUrl}/api/payments`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.NAJIKI_API_KEY}` // Secure server-side authentication
-      },
-      body: JSON.stringify(najikiPayload)
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/api/payments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.NAJIKI_API_KEY}` // Secure server-side authentication
+        },
+        body: JSON.stringify(najikiPayload),
+        signal: AbortSignal.timeout(20000),
+      });
+    } catch (networkError: any) {
+      const reason = networkError?.name === 'TimeoutError' ? 'timed out after 20s' : (networkError?.message || 'network error');
+      console.error(`[payments/intent] NaJiki unreachable at ${najikiHost}: ${reason}`);
+      return NextResponse.json(
+        { error: `The payment provider could not be reached (${reason}). No money was taken — please try again shortly.` },
+        { status: 502, headers: corsHeaders }
+      );
+    }
 
     const responseText = await response.text();
+    const contentType = response.headers.get('content-type') || '';
+    const looksLikeHtml = /^\s*<!doctype html/i.test(responseText) || /^\s*<html/i.test(responseText);
     let data;
+
+    // A payment API answers JSON. Anything else (an HTML error page, a login
+    // redirect) means the configured origin is broken or stale — never leak that
+    // page to the member, and never pretend it is a payment result.
+    if (!contentType.includes('application/json') || looksLikeHtml) {
+      console.error(
+        `[payments/intent] NaJiki at ${najikiHost} returned ${looksLikeHtml ? 'HTML' : 'non-JSON'} ` +
+        `(HTTP ${response.status}) instead of JSON: ${responseText.substring(0, 200)}`
+      );
+      return NextResponse.json(
+        {
+          error: 'The payment provider is temporarily unavailable, so no money was taken. ' +
+            'Please try again shortly or contact your SACCO if it continues.',
+        },
+        { status: 502, headers: corsHeaders }
+      );
+    }
+
     try {
       data = responseText ? JSON.parse(responseText) : {};
     } catch (e) {
-      console.error('NaJiki API returned non-JSON:', responseText);
-      return NextResponse.json({ error: `NaJiki gateway error (Status ${response.status}). Response: ${responseText.substring(0, 100)}` }, { status: 500, headers: corsHeaders });
+      console.error(`[payments/intent] Unparseable JSON from ${najikiHost}: ${responseText.substring(0, 200)}`);
+      return NextResponse.json(
+        { error: 'The payment provider returned an unreadable response. No money was taken — please try again.' },
+        { status: 502, headers: corsHeaders }
+      );
     }
 
     if (!response.ok) {
@@ -363,6 +394,14 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error('Kunity Backend Error:', error);
+    if (error instanceof NajikiConfigError) {
+      // Deployment misconfiguration, not a caller error: say so once, in the
+      // logs, and give the member something true and non-technical.
+      return NextResponse.json(
+        { error: 'Payments are not configured correctly on the server. Please contact your SACCO.' },
+        { status: 503, headers: corsHeaders }
+      );
+    }
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500, headers: corsHeaders });
   }
 }

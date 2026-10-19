@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
+import { normalizeNajikiBaseUrl, resolveNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function GET(
   req: NextRequest,
@@ -58,7 +58,7 @@ export async function GET(
       return NextResponse.json({ status: 'failed', source: 'ledger' });
     }
 
-    const apiUrl = normalizeNajikiBaseUrl(process.env.NAJIKI_API_URL || "https://najiki.netlify.app");
+    const apiUrl = resolveNajikiBaseUrl();
     const apiKey = process.env.NAJIKI_API_KEY || "";
     // NaJiki returns 404 for a tenant-scoped payment unless the caller names the same tenant code
     // that was sent when the payment was created (see /api/payments/intent). Use the same lookup.

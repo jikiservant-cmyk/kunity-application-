@@ -5,7 +5,7 @@ import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
 import { normalizeUgMomo } from '@/lib/validators';
 import { parseSmsRate, smsCreditsForAmount } from '@/lib/sms-bundles';
-import { normalizeNajikiBaseUrl } from '@/lib/najiki-url';
+import { normalizeNajikiBaseUrl, resolveNajikiBaseUrl } from '@/lib/najiki-url';
 
 export async function POST(req: NextRequest) {
   try {
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Double check status with Najiki
-    const apiUrl = normalizeNajikiBaseUrl(process.env.NAJIKI_API_URL || "https://najiki.netlify.app");
+    const apiUrl = resolveNajikiBaseUrl();
     const apiKey = process.env.NAJIKI_API_KEY || "";
     // NaJiki (GET /api/payments/[reference]) returns 404 for a tenant-scoped payment unless the
     // request names the same tenant code. Without this, every confirmation failed.

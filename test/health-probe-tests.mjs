@@ -46,11 +46,11 @@ const check = (name, fn) => {
 
 const clearEnv = () => ENV_KEYS.forEach((k) => { delete process.env[k]; });
 
-const setHealthyEnv = (supabaseUrl) => {
+const setHealthyEnv = (supabaseUrl, najikiUrl = 'http://127.0.0.1:1') => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = supabaseUrl;
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = SENTINELS.anon;
   process.env.SUPABASE_SERVICE_ROLE_KEY = SENTINELS.service;
-  process.env.NAJIKI_API_URL = 'http://127.0.0.1:1';
+  process.env.NAJIKI_API_URL = najikiUrl;
   process.env.NAJIKI_API_KEY = SENTINELS.najikiKey;
   process.env.NAJIKI_WEBHOOK_SECRET = SENTINELS.najikiSecret;
   process.env.NAJIKI_APPLICATION_CODE = 'sacco';
@@ -74,6 +74,27 @@ const supabase = http.createServer((req, res) => {
 });
 await new Promise((resolve) => supabase.listen(0, '127.0.0.1', resolve));
 const supabaseUrl = `http://127.0.0.1:${supabase.address().port}`;
+
+/**
+ * Stand-in NaJiki. A configured URL is no longer enough for the probe to pass:
+ * the route actually asks `/api/health`, because a stale deployment answers that
+ * path with an HTML login redirect rather than JSON.
+ */
+let najikiMode = 'healthy';
+const najiki = http.createServer((req, res) => {
+  if (req.url === '/api/health' && najikiMode === 'healthy') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ status: 'ok', version: 'test-abc1234', checks: {} }));
+  }
+  if (najikiMode === 'html') {
+    res.writeHead(500, { 'Content-Type': 'text/html' });
+    return res.end('<!DOCTYPE html><html><head><meta charSet="utf-8"/></head><body>error</body></html>');
+  }
+  res.writeHead(503, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: 'degraded', checks: { database: { ok: false } } }));
+});
+await new Promise((resolve) => najiki.listen(0, '127.0.0.1', resolve));
+const najikiUrl = `http://127.0.0.1:${najiki.address().port}`;
 
 const call = async () => {
   const res = await GET();
@@ -126,7 +147,7 @@ check('the .env.example stub values do not count as configured', () => {
 
 // --------------------------------------------------------------------- healthy
 clearEnv();
-setHealthyEnv(supabaseUrl);
+setHealthyEnv(supabaseUrl, najikiUrl);
 const healthy = await call();
 
 check('a fully configured environment with a reachable Supabase is ok (HTTP 200)', () => {
@@ -140,6 +161,11 @@ check('the reported application code is the deployed one', () => {
   assert.equal(healthy.body.checks.najikiApplicationCode, 'sacco');
 });
 
+check('the probe reports that NaJiki itself answered', () => {
+  assert.equal(healthy.body.checks.najikiReachable, true, JSON.stringify(healthy.body.warnings));
+  assert.equal(healthy.body.checks.najikiVersion, 'test-abc1234');
+});
+
 check('NO SECRET VALUE APPEARS ANYWHERE IN THE RESPONSE', () => {
   for (const [label, sentinel] of Object.entries(SENTINELS)) {
     assert.ok(
@@ -150,6 +176,30 @@ check('NO SECRET VALUE APPEARS ANYWHERE IN THE RESPONSE', () => {
   // Neither may a prefix or a fragment that would let an attacker fingerprint it.
   assert.ok(!healthy.text.includes('SENTINEL'), 'a secret fragment leaked into the health response');
   assert.ok(!healthy.text.includes('upstash-token'), 'the Upstash token leaked into the health response');
+});
+
+// ------------------------------------------------------- provider misconfigured
+// The exact production failure of 2026-10-19: NAJIKI_API_URL is present, but the
+// origin answers payment calls with an HTML page. This must never look healthy.
+clearEnv();
+setHealthyEnv(supabaseUrl, najikiUrl);
+najikiMode = 'html';
+const staleProvider = await call();
+najikiMode = 'healthy';
+
+check('a NaJiki origin that answers with HTML is degraded, with an actionable warning', () => {
+  assert.equal(staleProvider.status, 503, JSON.stringify(staleProvider.body));
+  assert.equal(staleProvider.body.status, 'degraded');
+  assert.equal(staleProvider.body.checks.najikiReachable, false);
+  assert.ok(
+    staleProvider.body.warnings.some((w) => /NaJiki did not answer \/api\/health/.test(w)),
+    'expected the provider warning'
+  );
+  assert.ok(
+    staleProvider.body.warnings.some((w) => /najiki\.vercel\.app/.test(w)),
+    'the warning should name the live deployment'
+  );
+  assert.ok(!staleProvider.text.includes('<!DOCTYPE'), 'the upstream HTML leaked into health');
 });
 
 // -------------------------------------------------------------------- degraded
@@ -166,7 +216,7 @@ supabaseHealthy = true;
 
 // ------------------------------------------------- legacy webhook secret misuse
 clearEnv();
-setHealthyEnv(supabaseUrl);
+setHealthyEnv(supabaseUrl, najikiUrl);
 process.env.NAJIKI_WEBHOOK_SECRET = process.env.NAJIKI_API_KEY;
 const legacySecret = await call();
 
@@ -178,24 +228,27 @@ check('a webhook secret equal to the API key is flagged', () => {
   assert.ok(!legacySecret.text.includes(process.env.NAJIKI_API_KEY));
 });
 
-check('a webhook secret that is really an API key is flagged', () => {
+await (async () => {
   process.env.NAJIKI_WEBHOOK_SECRET = 'nk_live_abcdef123456';
-  return call().then((res) => {
+  const res = await call();
+  check('a webhook secret that is really an API key is flagged', () => {
     assert.ok(res.body.warnings.some((w) => /looks like an API key/.test(w)));
     assert.ok(!res.text.includes('nk_live_abcdef123456'));
   });
-});
+})();
 
 // -------------------------------------------------------------- provider guard
-check('a non-NaJiki payment provider is flagged', () => {
+await (async () => {
   process.env.PAYMENT_PROVIDER_TYPE = 'livepay';
-  return call().then((res) => {
+  const res = await call();
+  check('a non-NaJiki payment provider is flagged', () => {
     assert.ok(res.body.warnings.some((w) => /PAYMENT_PROVIDER_TYPE/.test(w)));
   });
-});
+})();
 
 clearEnv();
 supabase.close();
+najiki.close();
 
 const failed = results.filter((r) => !r.pass);
 console.log(`\nRESULT: ${results.length - failed.length} passed, ${failed.length} failed`);
