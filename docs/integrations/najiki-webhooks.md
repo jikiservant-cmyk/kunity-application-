@@ -36,18 +36,22 @@ callbacks to arrive.
 
 `NAJIKI_API_URL` must be the origin of the deployment that actually serves the
 API, with no trailing slash and no `/api` suffix — Kunity appends `/api/payments`
-itself. The current live deployment is **`https://najiki.vercel.app`**.
+itself. **It is read from the environment at runtime and is never hardcoded in
+the source.** NaJiki moves hosts (Netlify and Vercel have both served as the live
+deployment), so the only durable answer is to change the variable, not the code.
 
-There is no hardcoded fallback. If the variable is missing, Kunity's money paths
-throw a configuration error before contacting anyone rather than guessing an
-origin. This matters: the old `najiki.netlify.app` deployment is stale and answers
-API paths with an HTML login page, so a fallback to it made every deposit fail
-with `NaJiki gateway error (Status 500). Response: <!DOCTYPE html>…`.
+There is no fallback. If the variable is missing or malformed, Kunity's money
+paths throw a configuration error before contacting anyone rather than guessing
+an origin — a hardcoded default previously sent production deposits to a
+deployment that answered with an HTML error page.
 
-A configured URL is not proof of health. `GET /api/health` probes
-`{NAJIKI_API_URL}/api/health` and reports `najikiReachable` / `najikiVersion`,
-degrading to HTTP 503 when the origin does not answer with JSON. NaJiki itself
-returns `{"status":"ok",...}` when its database and cache are up.
+A configured URL is not proof of health. Before creating a payment intent,
+`lib/najiki-health.ts` probes `{NAJIKI_API_URL}/api/health` (cached 30 s on
+success, 5 s on failure) and refuses with a member-friendly message when the
+provider is unusable. `GET /api/health` reports the same result as
+`najikiReachable` / `najikiVersion` and degrades to HTTP 503. A provider that
+answers JSON `503` — its own rate limiter failing closed when Redis is missing —
+is caught here rather than after a PIN prompt.
 
 ## Payment API calls
 

@@ -175,14 +175,13 @@ sentinel secret leaks into the body in any state.
 
 ## NaJiki endpoint configuration (regression)
 
-On 2026-10-19 every production deposit failed with
-`NaJiki gateway error (Status 500). Response: <!DOCTYPE html>…`. The code had a
-hardcoded fallback origin (`najiki.netlify.app`) and that deployment was stale;
-the live API is `najiki.vercel.app`. The money paths now resolve
-`NAJIKI_API_URL` with no default, reject a missing/malformed value with an
-actionable error, and report an HTML or non-JSON upstream as a broken/stale
-deployment instead of echoing the page to the member. `/api/health` also probes
-`{NAJIKI_API_URL}/api/health` and degrades when it does not answer with JSON.
+NaJiki's deployment host changes, so the origin is always read from
+`NAJIKI_API_URL` and never hardcoded. These checks pin that rule, the
+configuration validation, the error classification (an HTML or non-JSON upstream
+is reported as a broken deployment instead of being echoed to the member), and
+the preflight probe in `lib/najiki-health.ts` that refuses a payment in about a
+second when the provider is down — including the JSON `503` its rate limiter
+returns when Redis is not configured.
 
 ```bash
 node_modules/.bin/tsx test/najiki-endpoint-config-tests.mjs   # expected: 14 passed

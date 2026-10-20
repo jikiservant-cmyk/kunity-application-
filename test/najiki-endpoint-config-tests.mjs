@@ -10,11 +10,15 @@
  * deployment behind it was stale, so `/api/payments` answered with a Next.js
  * HTML error page. The live API is `najiki.vercel.app`.
  *
- * These checks pin the three things that would have prevented / shortened it:
- *   1. no money path carries a built-in provider origin,
+ * These checks pin the things that would have prevented / shortened it:
+ *   1. no money path carries a built-in provider origin (NaJiki moves hosts —
+ *      Netlify and Vercel have both been "the live one" — so the origin is
+ *      always read from the environment),
  *   2. a missing or malformed `NAJIKI_API_URL` fails loudly with guidance,
  *   3. an HTML / non-JSON answer is reported as a configuration problem and
- *      never echoed back to the caller.
+ *      never echoed back to the caller,
+ *   4. a provider that is down is caught by a cached preflight probe before a
+ *      PIN prompt is ever requested, and the member is told no money was taken.
  *
  * Local stand-ins only. Run: node_modules/.bin/tsx test/najiki-endpoint-config-tests.mjs
  */
@@ -27,6 +31,11 @@ import {
   resolveNajikiBaseUrl,
   najikiHostLabel,
 } from '../lib/najiki-url.ts';
+import {
+  checkNajikiAvailability,
+  providerUnavailableMessage,
+  resetNajikiAvailabilityCache,
+} from '../lib/najiki-health.ts';
 import { NajikiProvider } from '../lib/payments/najiki-provider.ts';
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
@@ -88,7 +97,7 @@ check('a missing NAJIKI_API_URL is a configuration error that names the variable
     (error) =>
       error instanceof NajikiConfigError &&
       /NAJIKI_API_URL is not set/.test(error.message) &&
-      /najiki\.vercel\.app/.test(error.message),
+      /no trailing slash and no \/api suffix/.test(error.message),
     'expected an actionable NajikiConfigError'
   );
 });
@@ -98,20 +107,20 @@ check('a blank NAJIKI_API_URL is treated as missing', () => {
 });
 
 check('trailing slashes are trimmed so paths cannot become //api/...', () => {
-  assert.equal(resolveNajikiBaseUrl({ NAJIKI_API_URL: 'https://najiki.vercel.app/' }), 'https://najiki.vercel.app');
-  assert.equal(resolveNajikiBaseUrl({ NAJIKI_API_URL: 'https://najiki.vercel.app///' }), 'https://najiki.vercel.app');
+  assert.equal(resolveNajikiBaseUrl({ NAJIKI_API_URL: 'https://provider.example.test/' }), 'https://provider.example.test');
+  assert.equal(resolveNajikiBaseUrl({ NAJIKI_API_URL: 'https://provider.example.test///' }), 'https://provider.example.test');
 });
 
 check('a URL without a scheme is rejected instead of failing inside fetch', () => {
   assert.throws(
-    () => resolveNajikiBaseUrl({ NAJIKI_API_URL: 'najiki.vercel.app' }),
+    () => resolveNajikiBaseUrl({ NAJIKI_API_URL: 'provider.example.test' }),
     /not a valid absolute URL/
   );
 });
 
 check('a configured /api suffix is rejected (Kunity appends /api itself)', () => {
   assert.throws(
-    () => resolveNajikiBaseUrl({ NAJIKI_API_URL: 'https://najiki.vercel.app/api' }),
+    () => resolveNajikiBaseUrl({ NAJIKI_API_URL: 'https://provider.example.test/api' }),
     /without the \/api suffix/
   );
 });
@@ -121,7 +130,34 @@ check('non-http protocols are rejected', () => {
 });
 
 check('the host label never includes credentials or a path', () => {
-  assert.equal(najikiHostLabel('https://user:pass@najiki.vercel.app/base'), 'najiki.vercel.app');
+  assert.equal(najikiHostLabel('https://user:pass@provider.example.test/base'), 'provider.example.test');
+});
+
+// ── 3. The money path preflights the provider ───────────────────────────────
+check('the payment-intent route probes NaJiki before creating an intent', () => {
+  const route = read('app/api/payments/intent/route.ts');
+  assert.match(route, /checkNajikiAvailability\(\)/);
+  assert.match(route, /providerUnavailableMessage\(/, 'the preflight failure is not explained to the member');
+  assert.match(route, /status: 503/, 'an unavailable provider should not look like a server crash');
+});
+
+check('a member never sees the provider name, a status code, or raw upstream text', () => {
+  const route = read('app/api/payments/intent/route.ts');
+  // The old shape: `NaJiki Error (${response.status}): ${errorMessage}`
+  assert.doesNotMatch(
+    route,
+    /NaJiki Error \(\$\{response\.status\}\)/,
+    'the raw provider error is still returned to the caller'
+  );
+  const member = read('app/member/page.tsx');
+  assert.doesNotMatch(member, /alert\("Error: " \+ e\.message\)/, 'the member UI still prefixes errors with "Error:"');
+  assert.match(member, /paymentFailureMessage\(/, 'the member UI does not parse payment failures defensively');
+});
+
+check('the member-facing unavailable message promises no money was taken', () => {
+  const message = providerUnavailableMessage();
+  assert.match(message, /no money was taken/i);
+  assert.doesNotMatch(message, /NaJiki|HTTP|\b5\d\d\b/, 'provider internals leaked into a member-facing string');
 });
 
 // ── 3. Upstream failures are reported honestly ──────────────────────────────
@@ -140,6 +176,90 @@ const withEnv = async (env, fn) => {
     }
   }
 };
+
+// ── 4. The availability probe itself ────────────────────────────────────────
+const startStub = async (handler) => {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, url: `http://127.0.0.1:${server.address().port}` };
+};
+
+const healthStub = await startStub((req, res) => {
+  if (req.url === '/api/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ status: 'ok', version: 'abc1234', checks: {} }));
+  }
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end('{}');
+});
+resetNajikiAvailabilityCache();
+await withEnv({ NAJIKI_API_URL: healthStub.url }, async () => {
+  await checkAsync('a healthy provider passes the probe and reports its version', async () => {
+    const result = await checkNajikiAvailability();
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.version, 'abc1234');
+  });
+});
+healthStub.server.close();
+
+const htmlHealth = await startStub((req, res) => {
+  res.writeHead(500, { 'Content-Type': 'text/html' });
+  res.end('<!DOCTYPE html><html><body>error</body></html>');
+});
+resetNajikiAvailabilityCache();
+await withEnv({ NAJIKI_API_URL: htmlHealth.url }, async () => {
+  await checkAsync('a provider serving HTML fails the probe with a reason', async () => {
+    const result = await checkNajikiAvailability();
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /HTML page/);
+  });
+
+  await checkAsync('the failure is cached briefly so a retry burst does not hammer the provider', async () => {
+    const cached = await checkNajikiAvailability();
+    assert.equal(cached.ok, false);
+    assert.equal(cached.cached, true);
+  });
+});
+htmlHealth.server.close();
+resetNajikiAvailabilityCache();
+
+const degradedHealth = await startStub((req, res) => {
+  res.writeHead(503, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: 'degraded', checks: { database: { ok: false } } }));
+});
+resetNajikiAvailabilityCache();
+await withEnv({ NAJIKI_API_URL: degradedHealth.url }, async () => {
+  await checkAsync('a provider reporting itself unhealthy fails the probe', async () => {
+    const result = await checkNajikiAvailability();
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /unhealthy \(HTTP 503\)/);
+  });
+});
+degradedHealth.server.close();
+resetNajikiAvailabilityCache();
+
+const noHealthRoute = await startStub((req, res) => {
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end('{}');
+});
+resetNajikiAvailabilityCache();
+await withEnv({ NAJIKI_API_URL: noHealthRoute.url }, async () => {
+  await checkAsync('an older deployment without /api/health is allowed through', async () => {
+    const result = await checkNajikiAvailability();
+    assert.equal(result.ok, true, 'a missing health route must not block a working provider');
+  });
+});
+noHealthRoute.server.close();
+resetNajikiAvailabilityCache();
+
+await withEnv({}, async () => {
+  await checkAsync('an unconfigured provider fails the probe instead of guessing', async () => {
+    const result = await checkNajikiAvailability();
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /NAJIKI_API_URL/);
+  });
+});
+resetNajikiAvailabilityCache();
 
 // A stale deployment: `/api/payments` answers 500 with a Next.js HTML page.
 const stale = http.createServer((req, res) => {

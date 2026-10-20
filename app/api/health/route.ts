@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { checkNajikiAvailability } from '@/lib/najiki-health';
 
 /**
  * Deployment health / configuration probe.
@@ -64,43 +65,20 @@ async function probeSupabase(url: string, anonKey: string): Promise<boolean> {
 /**
  * Ask NaJiki whether it is actually serving its API.
  *
- * Presence of `NAJIKI_API_URL` is not health: on 2026-10-19 the variable was set
- * to a stale deployment whose `/api/payments` answered `500 <!DOCTYPE html>`,
- * so every deposit failed while this probe happily reported the env var as
- * present. A configured-but-unreachable provider must show up here.
+ * Presence of `NAJIKI_API_URL` is not health: the variable has been set to a
+ * deployment whose `/api/payments` answered with an HTML error page, so every
+ * deposit failed while this probe happily reported the env var as present. The
+ * shared availability check owns that logic — one implementation, used by the
+ * money paths and by this endpoint.
  */
-async function probeNajiki(url: string): Promise<{ reachable: boolean; version: string | null }> {
-  try {
-    const res = await fetch(`${url.replace(/\/+$/, '')}/api/health`, {
-      cache: 'no-store',
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let version: string | null = null;
-    let isJson = false;
-    try {
-      const parsed = JSON.parse(text);
-      isJson = true;
-      version = typeof parsed?.version === 'string' ? parsed.version : null;
-    } catch {
-      // Non-JSON (typically an HTML error page or a login redirect).
-    }
-    // NaJiki answers 200 {status:'ok'} when its database and cache are up, and
-    // 503 when a dependency is down. Anything non-JSON means we are not talking
-    // to the payment API at all.
-    const reachable = isJson && res.ok;
-    if (!reachable) {
-      console.error(
-        `[health] NaJiki at ${url} answered HTTP ${res.status} ` +
-        `with ${isJson ? 'JSON' : 'a non-JSON body'}: ${text.slice(0, 120)}`
-      );
-    }
-    return { reachable, version };
-  } catch (error) {
-    console.error(`[health] NaJiki probe to ${url} failed:`, error);
-    return { reachable: false, version: null };
+async function probeNajiki(url: string): Promise<{ reachable: boolean; version: string | null; reason?: string }> {
+  const availability = await checkNajikiAvailability({ force: true });
+  if (availability.ok) {
+    return { reachable: true, version: availability.version };
   }
+  // `url` is passed for the log line only; the checker already logged the detail.
+  console.error(`[health] NaJiki is not usable at ${url}: ${availability.reason}`);
+  return { reachable: false, version: null, reason: availability.reason };
 }
 
 export async function GET() {
@@ -180,8 +158,8 @@ export async function GET() {
   const najikiProbe = najikiApiUrl ? await probeNajiki(najikiApiUrl) : null;
   if (najikiProbe && !najikiProbe.reachable) {
     warnings.push(
-      'NaJiki did not answer /api/health at the configured NAJIKI_API_URL — payments will fail. ' +
-      'Point it at the live NaJiki API origin (https://najiki.vercel.app), with no /api suffix.'
+      'NaJiki is not usable at the configured NAJIKI_API_URL — payments will fail. ' +
+      'Point it at the origin of the running NaJiki deployment, with no trailing slash and no /api suffix.'
     );
   }
 

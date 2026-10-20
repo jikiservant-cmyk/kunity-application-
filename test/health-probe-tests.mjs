@@ -192,12 +192,12 @@ check('a NaJiki origin that answers with HTML is degraded, with an actionable wa
   assert.equal(staleProvider.body.status, 'degraded');
   assert.equal(staleProvider.body.checks.najikiReachable, false);
   assert.ok(
-    staleProvider.body.warnings.some((w) => /NaJiki did not answer \/api\/health/.test(w)),
+    staleProvider.body.warnings.some((w) => /NaJiki is not usable at the configured NAJIKI_API_URL/.test(w)),
     'expected the provider warning'
   );
   assert.ok(
-    staleProvider.body.warnings.some((w) => /najiki\.vercel\.app/.test(w)),
-    'the warning should name the live deployment'
+    staleProvider.body.warnings.some((w) => /no trailing slash and no \/api suffix/.test(w)),
+    'the warning should say how to fix the origin'
   );
   assert.ok(!staleProvider.text.includes('<!DOCTYPE'), 'the upstream HTML leaked into health');
 });
