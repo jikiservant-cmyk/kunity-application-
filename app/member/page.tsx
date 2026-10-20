@@ -49,6 +49,34 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   });
 }
 
+/**
+ * Turn a failed payment-intent response into something a member can act on.
+ *
+ * The provider's own words ("NaJiki Error (503): Service temporarily
+ * unavailable") mean nothing to a payer, and a hosting layer can answer with an
+ * HTML page, which used to surface as "Unexpected token '<'". Read the body
+ * defensively and never show raw upstream text.
+ */
+async function paymentFailureMessage(res: Response): Promise<string> {
+  const text = await res.text().catch(() => '');
+  if (text) {
+    try {
+      const body = JSON.parse(text);
+      const message = typeof body?.error === 'string' ? body.error.trim() : '';
+      if (message) return message;
+    } catch {
+      // Not JSON (an HTML error page from a proxy, for instance) — fall through.
+    }
+  }
+  if (res.status === 429) {
+    return 'Too many payment attempts. Please wait a minute and try again — no money was taken.';
+  }
+  if (res.status === 503 || res.status >= 500) {
+    return 'The payment service is temporarily unavailable. No money has been taken from your phone — please try again shortly.';
+  }
+  return 'We could not start that payment. No money was taken from your phone — please try again.';
+}
+
 const UGX  = (n: number | string) => `UGX ${Number(n).toLocaleString("en-UG")}`;
 const UGXM = (n: number | string) => {
   const num = Number(n);
@@ -547,7 +575,7 @@ export default function MemberDashboard() {
         ? `You already have a ${productName} account.`
         : `Account created: ${productName}. To activate this plan and unlock your dashboard, please purchase a Virtual Account Card.`);
     } catch (e: any) {
-      alert("Error: " + e.message);
+      alert(e.message || 'Something went wrong. Please try again.');
     } finally {
       setActionLoading(false);
     }
@@ -609,6 +637,9 @@ export default function MemberDashboard() {
             paymentTypeCode: 'deposit'
           })
         });
+        if (!res.ok) {
+          throw new Error(await paymentFailureMessage(res));
+        }
         const json = await res.json();
         if (json.success) {
           const intentId = json.intent.id;
@@ -623,10 +654,10 @@ export default function MemberDashboard() {
           setAmountInput('');
           setPhoneInput('');
         } else {
-          throw new Error(json.error);
+          throw new Error(json.error || 'We could not start that payment. No money was taken — please try again.');
         }
       } catch (e: any) {
-        alert("Error: " + e.message);
+        alert(e.message || 'We could not start that payment. No money was taken — please try again.');
       }
     } else if (activeModal === 'withdraw') {
       if (amount > parseFloat(wallet.cached_balance || "0")) {
@@ -639,7 +670,7 @@ export default function MemberDashboard() {
         const res = await fetch('/api/member/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'withdraw', amount, accountId: wallet.id }) });
         if (!res.ok) { const err = await res.json(); throw new Error(err.error); }
       } catch(e:any) {
-        alert("Error: " + e.message);
+        alert(e.message || 'Something went wrong. Please try again.');
       }
     } else if (activeModal === 'loan') {
       try {
@@ -651,7 +682,7 @@ export default function MemberDashboard() {
         const res = await fetch('/api/member/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'loan', amount, productId: selectedLoanProductId }) });
         if (!res.ok) { const err = await res.json(); throw new Error(err.error); }
       } catch(e:any) {
-        alert("Error: " + e.message);
+        alert(e.message || 'Something went wrong. Please try again.');
       }
     } else if (activeModal === 'repay' && activeLoan) {
       if (amount > parseFloat(wallet.cached_balance || "0")) {
@@ -670,7 +701,7 @@ export default function MemberDashboard() {
         const res = await fetch('/api/member/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'repay', amount, accountId: wallet.id, loanId: activeLoan.id }) });
         if (!res.ok) { const err = await res.json(); throw new Error(err.error); }
       } catch(e:any) {
-        alert("Error: " + e.message);
+        alert(e.message || 'Something went wrong. Please try again.');
       }
     }
     setAmountInput('');
@@ -842,6 +873,9 @@ export default function MemberDashboard() {
                       paymentTypeCode: 'account_activation'
                     })
                   });
+                  if (!res.ok) {
+                    throw new Error(await paymentFailureMessage(res));
+                  }
                   const json = await res.json();
                   if (json.success) {
                     const intentId = json.intent.id;
@@ -855,10 +889,10 @@ export default function MemberDashboard() {
                     setPhoneInput('');
                     setAmountInput('');
                   } else {
-                    throw new Error(json.error);
+                    throw new Error(json.error || 'We could not start that payment. No money was taken — please try again.');
                   }
                 } catch (e: any) {
-                  alert("Error: " + e.message);
+                  alert(e.message || 'We could not start that payment. No money was taken — please try again.');
                 } finally {
                   setActionLoading(false);
                 }

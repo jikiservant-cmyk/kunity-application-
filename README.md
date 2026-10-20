@@ -46,7 +46,7 @@ cp .env.example .env.local
 | `LIVEPAY_API_KEY` | LivePay payment gateway public API key |
 | `LIVEPAY_SECRET_KEY` | LivePay HMAC webhook signing secret (required for webhook validation) |
 | `LIVEPAY_ACCOUNT_NUMBER` | LivePay merchant / collector account number |
-| `NAJIKI_API_URL` | Origin of the deployed NaJiki API, e.g. `https://najiki.vercel.app` (no trailing slash, no `/api` suffix). No built-in default — a missing value fails closed. |
+| `NAJIKI_API_URL` | Origin of your running NaJiki deployment (no trailing slash, no `/api` suffix). Read from the environment at runtime — never hardcoded. No built-in default: a missing value fails closed before any payment is attempted. |
 | `NAJIKI_API_KEY` | Bearer API key for NaJiki payment/status and SMS dispatch requests |
 | `NAJIKI_APPLICATION_CODE` | Exact registered application code; the current NaJiki seed uses `sacco` |
 | `NAJIKI_WEBHOOK_SECRET` | Dedicated webhook secret returned once by current NaJiki setup/rotation; required for matching signed callbacks. Only legacy NaJiki application rows without a separate secret use the API-key fallback. |
