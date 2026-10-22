@@ -383,7 +383,7 @@ export default function MemberDashboard() {
                 Awesome! We received your payment of <strong style={{ color: '#1C1917' }}>UGX {promptPayment.amount.toLocaleString()}</strong> via Mobile Money.
                 <br />
                 {promptPayment.type === 'account_activation' 
-                  ? "Your Sacco Connect account and Virtual Account Card are now fully activated!" 
+                  ? "Your SaccoOs account and Virtual Account Card are now fully activated!" 
                   : "Your wallet has been topped up successfully!"}
               </p>
 
@@ -842,7 +842,7 @@ export default function MemberDashboard() {
             </div>
             <h1 style={{ fontSize: 26, fontWeight: 800, color: T.text, marginBottom: 12 }}>Virtual Account Card</h1>
             <p style={{ fontSize: 15, color: T.sub, marginBottom: 32, lineHeight: 1.5 }}>
-              To activate your Sacco Connect account and unlock all features, please purchase a virtual account card for <strong>UGX 5,000</strong>.
+              To activate your SaccoOs account and unlock all features, please purchase a virtual account card for <strong>UGX 5,000</strong>.
             </p>
             
             <div style={{ width: '100%', maxWidth: 400, background: '#FFF8F0', padding: 24, borderRadius: 24, border: '1px solid #EAE0CC', textAlign: 'left', marginBottom: 24, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>

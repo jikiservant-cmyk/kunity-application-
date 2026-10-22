@@ -14,40 +14,20 @@ const getEnvAnonKey = () => {
   return process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key';
 };
 
+// Cookies live for 30 days so a login survives browser restarts and PWA
+// relaunches — the member stays signed in until they tap logout.
+const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+
 let clientInstance: any = null;
 
 function getClient() {
   if (clientInstance) return clientInstance;
 
-  // Self-heal bloated/duplicate cookies to prevent "400 Bad Request"
-  if (typeof window !== 'undefined') {
-    try {
-      const cookies = document.cookie.split(';');
-      const counts: Record<string, number> = {};
-      cookies.forEach(c => {
-        const name = c.trim().split('=')[0].trim();
-        if (name.startsWith('sb-')) {
-          counts[name] = (counts[name] || 0) + 1;
-        }
-      });
-      Object.keys(counts).forEach(name => {
-        if (counts[name] > 1) {
-          // Expire them across common cookie scopes
-          document.cookie = `${name}=; path=/; max-age=0; SameSite=None; Secure`;
-          document.cookie = `${name}=; path=/; max-age=0; SameSite=None; Secure; Partitioned`;
-          document.cookie = `${name}=; path=/; max-age=0;`;
-        }
-      });
-    } catch (e) {
-      console.warn("Cookie self-healing error:", e);
-    }
-  }
-
   const supabaseUrl = getEnvUrl();
   const supabaseAnonKey = getEnvAnonKey();
 
   // Detect if we are in localhost or HTTP to avoid cookie rejection
-  const isLocalhost = typeof window !== 'undefined' && 
+  const isLocalhost = typeof window !== 'undefined' &&
     (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
   clientInstance = createBrowserClient(
@@ -56,7 +36,8 @@ function getClient() {
     {
       cookieOptions: {
         sameSite: isLocalhost ? 'lax' : 'none',
-        secure: !isLocalhost
+        secure: !isLocalhost,
+        maxAge: SESSION_COOKIE_MAX_AGE,
       },
       db: {
         schema: 'kunity'
@@ -64,32 +45,16 @@ function getClient() {
     }
   );
 
-  if (typeof window !== 'undefined' && !isLocalhost) {
-    clientInstance.auth.onAuthStateChange((event: string, session: any) => {
-      try {
-        const cookies = document.cookie.split(';');
-        if (!(window as any).__partitionedCookies) {
-          (window as any).__partitionedCookies = {};
-        }
-        cookies.forEach(cookie => {
-          const trimmed = cookie.trim();
-          const eqIndex = trimmed.indexOf('=');
-          if (eqIndex !== -1) {
-            const name = trimmed.substring(0, eqIndex).trim();
-            const value = trimmed.substring(eqIndex + 1).trim();
-            if (name.startsWith('sb-') && value) {
-              if ((window as any).__partitionedCookies[name] !== value) {
-                document.cookie = `${name}=${value}; path=/; max-age=31536000; SameSite=None; Secure; Partitioned`;
-                (window as any).__partitionedCookies[name] = value;
-              }
-            }
-          }
-        });
-      } catch (err) {
-        console.error("Error setting partitioned cookies:", err);
-      }
-    });
-  }
+  // SESSION PERSISTENCE (2026-10-22): this client used to (a) re-save every
+  // sb-* cookie as a SECOND copy with Partitioned + a 1-year expiry on every
+  // auth change, and (b) "self-heal" by deleting every duplicate copy on
+  // load — including the live session cookie. The two writer/eraser hacks
+  // fought each other, left same-named cookies with drifting values, and the
+  // middleware then read a stale copy, concluded the refresh token was
+  // already used, and wiped the login on every hard refresh. Both blocks are
+  // removed: @supabase/ssr is the single writer of session cookies, with the
+  // SAME attributes the middleware uses (see lib/supabase-middleware.ts).
+  // Do not re-add manual DOM cookie handling for sb-* cookies here.
 
   return clientInstance;
 }

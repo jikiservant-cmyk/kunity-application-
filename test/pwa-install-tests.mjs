@@ -107,6 +107,25 @@ check(
   prompt.includes("'generic'")
 );
 
+console.log('Naming (installed app name: SaccoOs)');
+
+check(
+  'manifest name and short_name are SaccoOs (the installed app\'s name)',
+  /name: 'SaccoOs'/.test(manifestTs) && /short_name: 'SaccoOs'/.test(manifestTs)
+);
+check(
+  'install banner says "Install the SaccoOs app"',
+  prompt.includes('Install the SaccoOs app')
+);
+check(
+  'layout title / OG title / Apple title are SaccoOs',
+  layout.includes("title: 'SaccoOs'")
+);
+check(
+  'no "Sacco Connect" / "SaccoConnect" remains anywhere in app/',
+  ![manifestTs, sw, register, prompt, layout].some((src) => /Sacco ?Connect/.test(src))
+);
+
 // ---------------------------------------------------------------------------
 // Live pass: real dev server
 // ---------------------------------------------------------------------------
@@ -149,6 +168,8 @@ try {
   check(
     'served manifest is complete (name, standalone, 192+512, maskable)',
     !!manifest &&
+      manifest.name === 'SaccoOs' &&
+      manifest.short_name === 'SaccoOs' &&
       manifest.display === 'standalone' &&
       manifest.start_url === '/' &&
       manifest.icons.some((i) => i.sizes === '192x192' && i.purpose === 'any') &&

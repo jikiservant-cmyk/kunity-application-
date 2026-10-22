@@ -42,7 +42,10 @@ export async function updateSession(request: NextRequest) {
             const cookieOpts: any = { 
               ...options, 
               sameSite: isLocalhost ? 'lax' : 'none', 
-              secure: !isLocalhost 
+              secure: !isLocalhost,
+              // Keep the login across browser restarts / PWA relaunches until
+              // the member logs out — same 30-day life as the browser client.
+              maxAge: 60 * 60 * 24 * 30,
             };
             if (!isLocalhost) {
               cookieOpts.partitioned = true;
@@ -64,8 +67,17 @@ export async function updateSession(request: NextRequest) {
     if (!authError.message?.includes('Auth session missing!')) {
       console.warn("[Middleware] Auth token check warning:", authError.message);
     }
-    
-    if (authError.message?.includes('Refresh Token') || authError.status === 400 || authError.status === 401) {
+
+    // SESSION PERSISTENCE (2026-10-22): wipe the login cookies ONLY when
+    // Supabase definitively rejects the session — a refresh-token rejection,
+    // or an access-token 401 (which only surfaces after a failed refresh
+    // attempt). A transient 400 ("Auth session missing!" while cookies are
+    // still settling, a mid-rotation race) must NEVER delete a live session:
+    // together with the duplicate partitioned cookie copies the browser
+    // client used to write, that was the logout-on-every-refresh bug.
+    const refreshTokenRejected =
+      /refresh token/i.test(authError.message || '') || authError.status === 401;
+    if (refreshTokenRejected && !request.nextUrl.pathname.startsWith('/auth')) {
       if (!request.nextUrl.pathname.startsWith('/auth')) {
         const url = request.nextUrl.clone();
         url.pathname = '/auth';
