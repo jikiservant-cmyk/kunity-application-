@@ -20,7 +20,7 @@
     "autoprefixer": "^10.4.21",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "inngest": "^4.5.1",
+
     "lru-cache": "^11.5.1",
     "lucide-react": "1.55.0",
     "motion": "^11.1.0",

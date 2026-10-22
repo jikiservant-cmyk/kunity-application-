@@ -20,12 +20,12 @@ check('welcome SMS is sent only by the request that created the member row', () 
 });
 
 check('welcome SMS carries a deduplication id', () => {
-  assert.match(read('app/api/auth/profile/route.ts'), /id: `welcome-\$\{authenticatedUserId\}`/);
+  assert.match(read('app/api/auth/profile/route.ts'), /idempotencyKey: `welcome-\$\{authenticatedUserId\}`/);
 });
 
 for (const f of ['app/api/webhooks/najiki/route.ts']) {
   check(`${f}: deposit SMS has a per-payment deduplication id`, () => {
-    assert.match(read(f), /id: `deposit-sms-\$\{(reference|internal_reference)\}`/);
+    assert.match(read(f), /idempotencyKey: `deposit-sms-\$\{(reference|internal_reference)\}`/);
   });
   check(`${f}: activation payments get a receipt, not a "credited" deposit alert`, () => {
     const s = read(f);

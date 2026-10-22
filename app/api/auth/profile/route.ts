@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { profileUpdateLimiter, registrationLimiter } from '@/lib/rate-limit';
 import { registrationBlockReason, identityChangeReason } from '@/lib/registration-guard';
-import { normalizeJoinCode } from '@/lib/join-code';
+import { resolveJoinCodeToOrg } from '@/lib/join-code-lookup';
 
 export async function POST(req: NextRequest) {
   try {
@@ -84,24 +84,23 @@ export async function POST(req: NextRequest) {
     }
 
     // 4. Tenant Verification (join-link based)
-    // The SACCO is taken ONLY from the join code. Clients can't pick a SACCO by
-    // ID, so every member joins the SACCO whose link they were given.
-    const normalizedCode = normalizeJoinCode(joinCode);
-    if (!normalizedCode) {
+    // The SACCO is taken ONLY from the join code (shared lookup: strict codes,
+    // plus the closed set of pre-migration-38 legacy aliases). Clients can't
+    // pick a SACCO by ID, so every member joins the SACCO whose link they were
+    // given.
+    const resolution = await resolveJoinCodeToOrg(supabaseAdmin, joinCode);
+    if (resolution.status === 'invalid') {
       return NextResponse.json({ error: 'A valid SACCO join link is required to register.' }, { status: 400 });
     }
-
-    const { data: targetOrg, error: orgErr } = await supabaseAdmin
-      .schema('kunity')
-      .from('organizations')
-      .select('id, name, is_active')
-      .eq('join_code', normalizedCode)
-      .maybeSingle();
-
-    if (orgErr || !targetOrg) {
+    if (resolution.status === 'error') {
+      console.error('Join code lookup failed:', resolution.message);
+      return NextResponse.json({ error: 'Database error verifying join link' }, { status: 500 });
+    }
+    if (resolution.status === 'not_found') {
       return NextResponse.json({ error: 'Invalid join link: SACCO not found' }, { status: 404 });
     }
 
+    const targetOrg = resolution.org;
     if (!targetOrg.is_active) {
       return NextResponse.json({ error: 'Forbidden: Selected SACCO organization is inactive' }, { status: 403 });
     }
@@ -325,32 +324,34 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 7. Queue Member Welcome SMS Notification
+    // 7. Send Member Welcome SMS Notification
     if (phone && createdHere) {
       const shortId = authenticatedUserId.slice(0, 8).toUpperCase();
       const saccoName = targetOrg.name || 'our SACCO';
       const welcomeMsg = `Hello ${firstName}, welcome to ${saccoName}! Your membership application has been received. Your Member ID is: ${shortId}. Keep this ID for your records.`;
+      // Direct dispatch through the shared SMS service. sendSms never throws —
+      // it reports failures — and the idempotency key deduplicates the welcome
+      // SMS per member across retries and replays.
       try {
-        const { inngest } = await import('@/lib/inngest/client');
-        await inngest.send({
-          // Deduplicates the welcome SMS per member for the event retention window.
-          id: `welcome-${authenticatedUserId}`,
-          name: 'sms/dispatch',
-          data: {
-            tenantId: orgId,
-            recipientPhone: phone,
-            message: welcomeMsg,
-            eventType: 'WELCOME',
-            originUrl: req.url,
-            templateData: {
-              first_name: firstName,
-              member_id: shortId,
-              sacco_name: saccoName
-            }
-          }
+        const { sendSms } = await import('@/lib/sms');
+        const sms = await sendSms({
+          tenantId: orgId,
+          recipientPhone: phone,
+          message: welcomeMsg,
+          eventType: 'WELCOME',
+          originUrl: req.url,
+          templateData: {
+            first_name: firstName,
+            member_id: shortId,
+            sacco_name: saccoName
+          },
+          idempotencyKey: `welcome-${authenticatedUserId}`
         });
+        if (!sms.success) {
+          console.warn('Could not send member welcome SMS notification:', sms.error);
+        }
       } catch (smsErr) {
-        console.warn('Could not queue member welcome SMS notification:', smsErr);
+        console.warn('Could not send member welcome SMS notification:', smsErr);
       }
     }
 

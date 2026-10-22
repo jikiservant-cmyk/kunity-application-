@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { verifyAdminAndTenant, assertTenantMatch } from '@/lib/admin-auth';
 import { apiLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
-import { generateJoinCode } from '@/lib/join-code';
+import { generateJoinCode, normalizeJoinCode } from '@/lib/join-code';
 
 // SACCO admins read / regenerate their own SACCO's member join code.
 // action: 'get' (default) | 'regenerate'. Regenerating invalidates the old link
@@ -66,7 +66,38 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Organization not found' }, { status: 404 });
     }
 
-    if (action === 'regenerate') {
+    // Self-heal: codes minted by migration 24's SQL default came from UUID hex
+    // and can contain '0'/'1', which the join-link alphabet excludes — those
+    // links never worked. Migration 38 backfills them, but rows created outside
+    // migrations (or before it ran) are healed here on read so the admin is
+    // always shown a working link.
+    const storedCode = typeof org.join_code === 'string' ? org.join_code : '';
+    const autoHeal = action === 'get' && !normalizeJoinCode(storedCode);
+
+    if (action === 'regenerate' || autoHeal) {
+      if (autoHeal && storedCode) {
+        // Preserve any link already shared under this legacy code via the
+        // closed alias mapping (tolerates the table not existing pre-migration).
+        const { error: aliasErr } = await supabaseAdmin
+          .schema('kunity')
+          .from('join_code_aliases')
+          .upsert({ legacy_code: storedCode, organization_id: org.id }, { onConflict: 'legacy_code', ignoreDuplicates: true });
+        if (aliasErr) {
+          console.warn('[join-code] could not preserve legacy alias (table missing or conflict):', aliasErr.message);
+        }
+      } else {
+        // Admin-initiated rotation: the UI promises older links stop working
+        // immediately, so drop every legacy alias for this SACCO as well.
+        const { error: clearErr } = await supabaseAdmin
+          .schema('kunity')
+          .from('join_code_aliases')
+          .delete()
+          .eq('organization_id', org.id);
+        if (clearErr) {
+          console.warn('[join-code] could not clear legacy aliases (table missing?):', clearErr.message);
+        }
+      }
+
       // Retry on the (very unlikely) unique-index collision.
       let newCode: string | null = null;
       let lastErr: any = null;
@@ -91,7 +122,10 @@ export async function POST(req: NextRequest) {
         action: 'join_code_regenerated',
         entityType: 'organization',
         entityId: org.id,
-        oldData: { join_code_last4: (org.join_code || '').slice(-4) },
+        oldData: {
+          join_code_last4: (org.join_code || '').slice(-4),
+          reason: autoHeal ? 'auto_heal_non_conforming_code' : 'admin_regenerate',
+        },
         newData: { join_code_last4: newCode.slice(-4) },
         ipAddress: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim(),
         userAgent: req.headers.get('user-agent') || undefined,

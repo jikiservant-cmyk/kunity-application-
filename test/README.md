@@ -168,7 +168,7 @@ curl -s https://<your-origin>/api/health            # 200 ok / 503 degraded / 50
 The probe returns presence **booleans only** — never a secret value, prefix or hash — and
 names the misconfigurations that matter at launch (placeholder credentials, missing
 service-role key, missing `NAJIKI_WEBHOOK_SECRET`, webhook secret equal to the API key,
-in-memory rate limiting, missing Inngest key, missing `APP_URL`). The suite asserts that no
+in-memory rate limiting, missing `APP_URL`). The suite asserts that no
 sentinel secret leaks into the body in any state.
 
 ---
@@ -215,6 +215,15 @@ node_modules/.bin/tsx test/najiki-contract-tests.mjs
 node_modules/.bin/tsx test/sms-topup-e2e-tests.mjs
 node_modules/.bin/tsx test/sms-recording-e2e-tests.mjs
 node_modules/.bin/tsx test/payment-intent-currency-tests.mjs
+
+# Deposit/activation waiting screen: the overlay must poll the status endpoint
+# (webhook verdicts reach the browser) and never spin forever. Expected: 18 passed.
+node_modules/.bin/tsx test/payment-waiting-screen-tests.mjs
+
+# LIVE replay of the same fix against a real Next.js server: the browser's exact
+# network sequence (deposit -> 3s polls -> HMAC-signed NaJiki webhook -> poll) plus
+# proof the watcher ships in the compiled /member client bundle. Expected: 16 passed.
+node test/payment-waiting-screen-live-tests.mjs
 
 # Adversarial regression checks; former exploit cases must now be refused.
 node test/money-engine-adversarial-tests.mjs

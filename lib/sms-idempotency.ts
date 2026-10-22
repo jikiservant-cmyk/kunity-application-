@@ -15,6 +15,22 @@ export async function claimIdempotencyKey(
   return { claimed: false, error: error.message };
 }
 
+// Releases a claim when the work it guarded produced no side effects (e.g. a
+// broadcast where not a single message was dispatched), so an honest retry is
+// not locked out by the earlier claim. Only call it when NOTHING happened.
+export async function releaseIdempotencyKey(
+  supabaseAdmin: { schema: (s: string) => any; from: (t: string) => any },
+  scope: string,
+  key: string
+): Promise<void> {
+  await supabaseAdmin
+    .schema('public')
+    .from('sms_idempotency_keys')
+    .delete()
+    .eq('scope', scope)
+    .eq('idem_key', key);
+}
+
 const KEY_PATTERN = /^[A-Za-z0-9_-]{8,100}$/;
 export function isValidIdempotencyKey(key: unknown): key is string {
   return typeof key === 'string' && KEY_PATTERN.test(key);

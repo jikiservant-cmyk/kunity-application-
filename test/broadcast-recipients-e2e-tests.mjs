@@ -2,7 +2,7 @@
  * End-to-end check of WHO receives an admin SMS broadcast.
  *
  * The real POST handler in app/api/admin/sms/send/route.ts runs against a local stand-in
- * for Supabase REST/Auth and the Inngest event API. The stand-in holds one SACCO with more
+ * for Supabase REST/Auth and the NaJiki SMS gateway. The stand-in holds one SACCO with more
  * than 1000 members (the PostgREST row cap), duplicates, invalid numbers, empty phones, plus
  * another SACCO's members and loans that must never receive anything.
  *
@@ -41,7 +41,7 @@ const loans = [
   { id: 'l-5', organization_id: TENANT_B, status: 'pending', member: members.find(m => m.organization_id === TENANT_B) }, // other SACCO
 ];
 
-const state = { events: [], idemKeys: new Set(), audit: [] };
+const state = { sends: [], idemKeys: new Set(), audit: [], debits: new Set(), walletBalance: 10_000_000, smsLog: [] };
 
 // ---------- stand-in server ----------
 const server = http.createServer(async (req, res) => {
@@ -51,10 +51,17 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const json = (code, data) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
 
-  // Inngest event API
-  if (req.method === 'POST' && url.pathname.startsWith('/e/')) {
-    state.events.push(...(Array.isArray(body) ? body : [body]));
-    return json(200, { ids: [], status: 200 });
+  // NaJiki SMS gateway — lib/sms.ts dispatches here directly.
+  if (req.method === 'POST' && url.pathname === '/api/messaging/send') {
+    state.sends.push({
+      to: body.to,
+      message: body.message,
+      eventType: body.eventType,
+      idempotencyKey: body.idempotencyKey,
+      idempotencyHeader: req.headers['idempotency-key'],
+      tenantCode: body.tenantCode,
+    });
+    return json(200, { smsId: `sms-${state.sends.length}` });
   }
   // Supabase Auth
   if (url.pathname === '/auth/v1/user') {
@@ -73,6 +80,28 @@ const server = http.createServer(async (req, res) => {
     return String(val) === v;
   });
 
+  if (table === 'rpc/debit_sms_wallet') {
+    // Idempotent debit: the same key must never charge twice.
+    const key = body.p_idempotency_key;
+    if (state.debits.has(key)) return json(200, { balance: state.walletBalance, replayed: true });
+    state.debits.add(key);
+    state.walletBalance -= Number(body.p_amount || 0);
+    return json(200, { balance: state.walletBalance });
+  }
+  if (table === 'tenants') {
+    const row = { id: TENANT_A, application_id: 'app-a', code: 'TA' };
+    return json(200, wantsObject ? row : [row]);
+  }
+  if (table === 'sms_templates') {
+    return json(200, wantsObject ? null : []);
+  }
+  if (table === 'wallet_transactions' && req.method === 'PATCH') {
+    return json(204, {});
+  }
+  if (table === 'sms_messages' && req.method === 'POST') {
+    state.smsLog.push(body);
+    return json(201, {});
+  }
   if (table === 'admin_profiles') {
     const row = { id: 'admin-a', role: 'sacco_admin', tenant_id: TENANT_A };
     return json(200, wantsObject ? row : [row]);
@@ -98,6 +127,12 @@ const server = http.createServer(async (req, res) => {
     state.idemKeys.add(key);
     return json(201, {});
   }
+  if (table === 'sms_idempotency_keys' && req.method === 'DELETE') {
+    // releaseIdempotencyKey(supabaseAdmin, scope, key) — only called when nothing was sent.
+    const f = Object.fromEntries(filters);
+    state.idemKeys.delete(`${f.scope}|${f.idem_key}`);
+    return json(204, {});
+  }
   if ((table === 'audit_logs' || table === 'audit_log') && req.method === 'POST') { state.audit.push(body); return json(201, {}); }
   return json(404, { message: `stand-in has no handler for ${req.method} ${table}` });
 });
@@ -116,9 +151,8 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 process.env.NEXT_PUBLIC_SUPABASE_URL = base;
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'svc-test';
-process.env.INNGEST_BASE_URL = base;
-process.env.INNGEST_EVENT_KEY = 'test-event-key';
-process.env.INNGEST_DEV = '1';
+process.env.NAJIKI_API_URL = base;
+process.env.NAJIKI_API_KEY = 'najiki-test';
 
 const { POST } = await import('../app/api/admin/sms/send/route.ts');
 
@@ -146,10 +180,10 @@ const ok = (name) => { passed++; console.log(`  ok  ${name}`); };
 
 console.log('Whole-SACCO broadcast ("all members")');
 {
-  state.events = [];
+  state.sends = [];
   const r = await broadcast({ recipientType: 'all' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const phones = state.events.map(e => e.data.recipientPhone);
+  const phones = state.sends.map(s => s.to);
   assert.ok(expectedMemberPhones.size > 1000, 'fixture must exceed the 1000-row cap');
   ok(`reads past the 1000-row cap: ${expectedMemberPhones.size} unique numbers reached`);
   assert.equal(phones.length, expectedMemberPhones.size);
@@ -169,55 +203,55 @@ console.log('Whole-SACCO broadcast ("all members")');
 
 console.log('Loan audience (pending borrowers)');
 {
-  state.events = [];
+  state.sends = [];
   const r = await broadcast({ recipientType: 'loans' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const phones = state.events.map(e => e.data.recipientPhone).sort();
+  const phones = state.sends.map(s => s.to).sort();
   assert.deepEqual(phones, [phoneFor(100), phoneFor(101)].map(p => '+256' + p.slice(1)).sort());
   ok('only pending loans of this SACCO; the borrower with two loans is sent once');
 }
 
 console.log('Typed numbers (explicit list)');
 {
-  state.events = [];
+  state.sends = [];
   const r = await broadcast({ recipients: [phoneFor(5), '+256' + phoneFor(6).slice(1), phoneFor(5)] });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.deepEqual(state.events.map(e => e.data.recipientPhone).sort(), ['+256' + phoneFor(5).slice(1), '+256' + phoneFor(6).slice(1)].sort());
+  assert.deepEqual(state.sends.map(s => s.to).sort(), ['+256' + phoneFor(5).slice(1), '+256' + phoneFor(6).slice(1)].sort());
   ok('typed member numbers, mixed formats and repeats: each member once, in E.164');
 }
 {
-  state.events = [];
+  state.sends = [];
   const r = await broadcast({ recipients: [phoneFor(5), '0799999999'] });
   assert.equal(r.status, 400);
   assert.match(r.body.error, /not members of this SACCO/);
-  assert.equal(state.events.length, 0);
+  assert.equal(state.sends.length, 0);
   ok('a non-member number refuses the whole broadcast; nothing is queued');
 }
 {
-  state.events = [];
+  state.sends = [];
   const b = members.find(m => m.organization_id === TENANT_B);
   const r = await broadcast({ recipients: [b.phone] });
   assert.equal(r.status, 400);
-  assert.equal(state.events.length, 0);
+  assert.equal(state.sends.length, 0);
   ok('another SACCO\'s member number is refused');
 }
 {
-  state.events = [];
+  state.sends = [];
   const r = await broadcast({ recipients: ['12345'] });
   assert.equal(r.status, 400);
   assert.match(r.body.error, /not valid Ugandan mobile numbers/);
-  assert.equal(state.events.length, 0);
+  assert.equal(state.sends.length, 0);
   ok('an invalid typed number is reported, not silently dropped');
 }
 
 console.log('Repeat submission');
 {
-  state.events = [];
+  state.sends = [];
   const first = await broadcast({ recipientType: 'loans', requestId: 'bc-test-0001' });
   assert.equal(first.status, 200);
   const again = await broadcast({ recipientType: 'loans', requestId: 'bc-test-0001' });
   assert.equal(again.status, 409);
-  assert.equal(state.events.filter(e => e.name === 'sms/dispatch').length, 2, 'only the first submission queues events');
+  assert.equal(state.sends.length, 2, 'only the first submission dispatches');
   ok('the same requestId queues once; the repeat is refused');
 }
 

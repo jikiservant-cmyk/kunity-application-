@@ -196,7 +196,8 @@ export async function sendSms({
     // FIN-32: never derive the debit key from message CONTENT. A content hash
     // makes an identical message to the same phone look like a replay, so the
     // second send went out without being charged. Callers that need retry
-    // safety pass a stable idempotencyKey (the Inngest event id does this).
+    // safety pass a stable idempotencyKey (per member, per broadcast
+    // request, or per payment reference).
     const resolvedIdempotencyKey = idempotencyKey
       ? `debit_${idempotencyKey}`
       : `debit_${crypto.randomUUID()}`;
@@ -224,8 +225,8 @@ export async function sendSms({
     const najikiUrl = process.env.NAJIKI_API_URL;
     const apiKey = process.env.NAJIKI_API_KEY;
     const applicationCode = process.env.NAJIKI_APPLICATION_CODE || 'sacco';
-    // The caller's own key (e.g. the Inngest event id) goes to NaJiki, so a retry of the same
-    // event is recognised there as well as by the wallet debit.
+    // The caller's own key goes to NaJiki as well, so a retry of the same
+    // logical send is recognised there as well as by the wallet debit.
     const najikiIdempotencyKey = idempotencyKey || resolvedIdempotencyKey;
     
     let tenantCode = process.env.NAJIKI_TENANT_CODE;
