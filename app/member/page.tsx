@@ -85,21 +85,6 @@ const UGXM = (n: number | string) => {
     : `UGX ${(num / 1_000).toFixed(0)}K`;
 };
 
-function Chip() {
-  return (
-    <div style={{
-      width:38, height:28, borderRadius:6,
-      background:`linear-gradient(135deg, ${T.gold} 0%, ${T.goldLt} 50%, ${T.gold} 100%)`,
-      display:"grid", gridTemplateRows:"repeat(3,1fr)",
-      padding:"5px 4px", gap:2,
-    }}>
-      {[0.3,0.15,0.3].map((o,i)=>(
-        <div key={i} style={{ background:`rgba(100,60,0,${o})`, borderRadius:1 }} />
-      ))}
-    </div>
-  );
-}
-
 function Card({ children, style={} }: any) {
   return (
     <div style={{
@@ -1006,6 +991,19 @@ export default function MemberDashboard() {
     branch: 'Main Branch'
   };
 
+  // Virtual account card (debit-card design): the SACCO is the brand, the
+  // member is the cardholder, and the member number is the card number.
+  const saccoName = (member?.organization?.name || 'Kunity').trim() || 'Kunity';
+  const saccoBrandMark = (saccoName[0] || 'K').toUpperCase();
+  const memberNumberRaw = String(member?.member_number || member?.id || '')
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase()
+    .padEnd(8, '0');
+  const cardNumber = `**** **** ${memberNumberRaw.slice(0, 4)} ${memberNumberRaw.slice(4, 8)}`;
+  const memberSince = member?.created_at
+    ? `${String(new Date(member.created_at).getMonth() + 1).padStart(2, '0')}/${String(new Date(member.created_at).getFullYear()).slice(-2)}`
+    : '--/--';
+
   const totalWallet = allAccounts.reduce((sum, acc) => sum + parseFloat(acc.cached_balance || '0'), 0);
 
   const balances = {
@@ -1076,64 +1074,95 @@ export default function MemberDashboard() {
               </div>
             </div>
 
-            {/* Premium Balance Card */}
+            {/* Virtual Account Card — debit-card design. The SACCO's name is
+                the brand, the member is the cardholder, the member number is
+                the card number, and MEMBER SINCE is the join date. */}
             <div style={{
-              borderRadius:28, padding:"28px 24px 24px", marginBottom:28,
-              background:`linear-gradient(145deg, ${T.cDeep} 0%, ${T.cRich} 45%, ${T.cMid} 100%)`,
-              position:"relative", overflow:"hidden",
-              boxShadow:`0 24px 64px ${T.cDeep}90, 0 8px 24px ${T.cDeep}60`,
+              position: "relative", isolation: "isolate", overflow: "hidden",
+              width: "min(100%, 460px)", aspectRatio: "1.586 / 1",
+              padding: "28px 30px", borderRadius: 21, color: "#fff",
+              background: "linear-gradient(135deg, #252a30, #11151a 65%, #20252b)",
+              boxShadow: "0 22px 50px rgba(16, 24, 40, .19)",
+              margin: "0 auto 16px", boxSizing: "border-box",
             }}>
-              <div style={{ position:"absolute", top:-60, right:-40, width:200, height:200, borderRadius:"50%", background:"rgba(255,255,255,0.04)", pointerEvents:"none" }} />
-              <div style={{ position:"absolute", bottom:-60, left:-30, width:170, height:170, borderRadius:"50%", background:"rgba(255,255,255,0.03)", pointerEvents:"none" }} />
-              <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(90deg, transparent 0%, ${T.gold} 40%, ${T.goldLt} 60%, ${T.gold} 80%, transparent 100%)`, opacity:0.7 }} />
+              {/* rotated ellipse decorations */}
+              <div style={{ position: "absolute", zIndex: 0, width: 370, height: 540, top: -210, right: -85, borderRadius: "50%", transform: "rotate(-35deg)", border: "1px solid rgba(255,255,255,.035)", boxShadow: "0 0 0 32px rgba(255,255,255,.018), 0 0 0 64px rgba(255,255,255,.015)" }} />
+              <div style={{ position: "absolute", zIndex: 0, width: 190, height: 400, bottom: -230, left: 100, borderRadius: "50%", transform: "rotate(-35deg)", border: "1px solid rgba(255,255,255,.035)", boxShadow: "0 0 0 35px rgba(255,255,255,.018)" }} />
 
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:26 }}>
-                <Chip />
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ fontSize:12, color:T.gold, fontWeight:700, letterSpacing:"0.14em", textTransform:"uppercase" }}>
-                    {member?.organization?.name || 'SaccoConnect'}
+              <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 23, fontWeight: 650, letterSpacing: "-0.8px" }}>
+                    <span style={{ fontSize: 31, fontWeight: 800, fontStyle: "italic" }}>{saccoBrandMark}</span>
+                    <span>{saccoName}</span>
                   </div>
-                  <div style={{ fontSize:9, color:"rgba(255,255,255,0.35)", letterSpacing:"0.12em", textTransform:"uppercase", marginTop:2 }}>
-                    Premium
+                  <span style={{ fontSize: 10, letterSpacing: "2.4px", color: "#d8dbe0" }}>DEBIT CARD</span>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 20, marginTop: "clamp(14px, 5vw, 28px)" }}>
+                  <div style={{ width: 56, height: 42, borderRadius: 8, background: "linear-gradient(135deg, #ffe9a1, #d7ae48)", border: "1px solid rgba(255,255,255,.25)", position: "relative", overflow: "hidden", flexShrink: 0 }}>
+                    <div style={{ position: "absolute", top: 0, bottom: 0, left: 18, right: 18, borderLeft: "1px solid #9e803c", borderRight: "1px solid #9e803c" }} />
+                    <div style={{ position: "absolute", left: 0, right: 0, top: 13, height: 14, borderTop: "1px solid #9e803c", borderBottom: "1px solid #9e803c" }} />
+                  </div>
+                  <div style={{ fontSize: 31, transform: "rotate(90deg)", color: "#f1f2f4", lineHeight: 1 }}>)))</div>
+                </div>
+
+                <div style={{ marginTop: "clamp(8px, 3.5vw, 17px)", fontSize: "clamp(16px, 4vw, 23px)", letterSpacing: "2.5px", whiteSpace: "nowrap", fontWeight: 450 }}>
+                  {cardNumber}
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: "clamp(8px, 3.5vw, 17px)" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 9, letterSpacing: "1.6px", color: "#aeb4bd", marginBottom: 5 }}>CARDHOLDER</div>
+                    <div style={{ fontSize: 13, letterSpacing: "1.8px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {memberObj.name.toUpperCase()}
+                    </div>
+                    <div style={{ marginTop: 13, fontSize: 13, letterSpacing: "1px" }}>
+                      <small style={{ fontSize: 7, letterSpacing: "1px", marginRight: 8, color: "#c5c9d0" }}>MEMBER SINCE</small>{memberSince}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", marginBottom: 1, paddingRight: 2, flexShrink: 0 }}>
+                    <div style={{ width: 43, height: 43, borderRadius: "50%", background: "#eb202d" }} />
+                    <div style={{ width: 43, height: 43, borderRadius: "50%", background: "#ff9f0a", marginLeft: -17, opacity: .96 }} />
                   </div>
                 </div>
               </div>
+            </div>
 
-              <div style={{ marginBottom:4 }}>
-                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)", textTransform:"uppercase", letterSpacing:"0.14em", marginBottom:10 }}>
-                  Wallet Balance
-                </div>
-                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                  <div style={{
-                    fontSize:34, fontWeight:800, color:"white",
-                    letterSpacing:"-0.03em", fontVariantNumeric:"tabular-nums", lineHeight:1,
-                  }}>
+            {/* Balance strip — the wallet figures that lived on the old card,
+                kept directly beneath the virtual account card. */}
+            <div style={{
+              borderRadius: 18, padding: "16px 18px", marginBottom: 28,
+              background: T.card, border: `1px solid ${T.border}`,
+              boxShadow: "0 2px 12px rgba(5,7,26,0.06)",
+              width: "min(100%, 460px)", margin: "0 auto 28px", boxSizing: "border-box",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 10, color: T.sub, textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 6 }}>
+                    Wallet Balance
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: T.text, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>
                     {showBal ? UGX(balances.wallet) : "••••••••••••"}
                   </div>
-                  <button onClick={()=>setShowBal(!showBal)} style={{ background:"none", border:"none", cursor:"pointer", padding:2, display:"flex", flexShrink:0 }}>
-                    {showBal ? <EyeOff size={18} color="rgba(255,255,255,0.45)" /> : <Eye size={18} color="rgba(255,255,255,0.45)" />}
-                  </button>
                 </div>
+                <button onClick={()=>setShowBal(!showBal)} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, display: "flex", flexShrink: 0 }}>
+                  {showBal ? <EyeOff size={18} color={T.ghost} /> : <Eye size={18} color={T.ghost} />}
+                </button>
               </div>
-
-              <div style={{ fontSize:12, color:"rgba(255,255,255,0.3)", letterSpacing:"0.18em", marginBottom:26, marginTop:10 }}>
-                ●●●● ●●●● {memberObj.id.replace("SCO-","")}
-              </div>
-
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
                 {[
                   { label:"Main Savings", val:balances.wallet },
                   { label:"Active Loan",  val:balances.loan    },
                 ].map(item=>(
                   <div key={item.label} style={{
-                    background:"rgba(255,255,255,0.08)",
-                    border:"1px solid rgba(255,255,255,0.1)",
-                    borderRadius:14, padding:"11px 10px",
+                    background: "#FAFAF9", border: `1px solid ${T.border}`,
+                    borderRadius: 14, padding: "11px 12px",
                   }}>
-                    <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)", marginBottom:6, letterSpacing:"0.08em", textTransform:"uppercase" }}>
+                    <div style={{ fontSize: 10, color: T.sub, marginBottom: 6, letterSpacing: "0.08em", textTransform: "uppercase" }}>
                       {item.label}
                     </div>
-                    <div style={{ fontSize:13, fontWeight:700, color:"white", fontVariantNumeric:"tabular-nums" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: T.text, fontVariantNumeric: "tabular-nums" }}>
                       {showBal ? UGXM(item.val) : "•••"}
                     </div>
                   </div>
