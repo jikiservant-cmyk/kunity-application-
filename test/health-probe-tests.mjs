@@ -29,7 +29,7 @@ const ENV_KEYS = [
   'SUPABASE_SERVICE_ROLE_KEY', 'NAJIKI_API_URL', 'NAJIKI_API_KEY', 'NAJIKI_WEBHOOK_SECRET',
   'NAJIKI_APPLICATION_CODE', 'APP_URL', 'NEXT_PUBLIC_SITE_URL', 'NEXT_PUBLIC_APP_URL',
   'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'ENFORCE_REDIS_RATELIMIT',
-  'INNGEST_EVENT_KEY', 'PAYMENT_PROVIDER_TYPE',
+  'PAYMENT_PROVIDER_TYPE',
 ];
 
 const results = [];
@@ -58,7 +58,6 @@ const setHealthyEnv = (supabaseUrl, najikiUrl = 'http://127.0.0.1:1') => {
   process.env.UPSTASH_REDIS_REST_URL = 'https://upstash.example.test';
   process.env.UPSTASH_REDIS_REST_TOKEN = 'upstash-token';
   process.env.ENFORCE_REDIS_RATELIMIT = 'true';
-  process.env.INNGEST_EVENT_KEY = 'inngest-key';
   process.env.PAYMENT_PROVIDER_TYPE = 'najiki';
 };
 
@@ -124,11 +123,10 @@ check('missing Supabase config is named, not hidden behind a placeholder', () =>
   );
 });
 
-check('strict rate limiting and background jobs are surfaced as warnings', () => {
+check('strict rate limiting is surfaced as a warning', () => {
   assert.equal(blank.body.checks.rateLimitBackend, 'memory');
   assert.equal(blank.body.checks.rateLimitFailClosed, false);
   assert.ok(blank.body.warnings.some((w) => /ENFORCE_REDIS_RATELIMIT/.test(w)));
-  assert.ok(blank.body.warnings.some((w) => /INNGEST_EVENT_KEY/.test(w)));
 });
 
 // ------------------------------------------------------------------ stub values

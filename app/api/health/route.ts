@@ -91,7 +91,6 @@ export async function GET() {
   const appUrl = env('APP_URL', 'NEXT_PUBLIC_SITE_URL', 'NEXT_PUBLIC_APP_URL');
   const upstashUrl = env('UPSTASH_REDIS_REST_URL');
   const upstashToken = env('UPSTASH_REDIS_REST_TOKEN');
-  const inngestEventKey = env('INNGEST_EVENT_KEY');
 
   const urlConfigured = isReal(supabaseUrl, new Set()) && supabaseUrl !== PLACEHOLDER_URL;
   const anonConfigured = isReal(supabaseAnonKey);
@@ -138,9 +137,6 @@ export async function GET() {
   }
   if (!rateLimitFailClosed) {
     warnings.push('ENFORCE_REDIS_RATELIMIT is not "true" — rate limiting will not fail closed under load.');
-  }
-  if (!inngestEventKey) {
-    warnings.push('INNGEST_EVENT_KEY is not set — background SMS dispatch and reconciliation jobs will not run.');
   }
   if (process.env.PAYMENT_PROVIDER_TYPE && process.env.PAYMENT_PROVIDER_TYPE !== 'najiki') {
     warnings.push('PAYMENT_PROVIDER_TYPE is not "najiki" — Kunity routes payments through NaJiki only.');
@@ -189,7 +185,6 @@ export async function GET() {
       appUrl: Boolean(appUrl),
       rateLimitBackend,
       rateLimitFailClosed,
-      inngestEventKey: Boolean(inngestEventKey),
     },
     warnings,
   };

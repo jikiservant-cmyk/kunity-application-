@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { apiLimiter } from '@/lib/rate-limit';
-import { normalizeJoinCode } from '@/lib/join-code';
+import { resolveJoinCodeToOrg } from '@/lib/join-code-lookup';
 
 // Public: turns a SACCO join code into that SACCO's id + name so the sign-up
 // page can lock the selection. Replaces the old public list of all SACCOs.
 // Returns ONLY id and name, and only for active SACCOs.
+// Codes resolve through resolveJoinCodeToOrg: strict alphabet codes against the
+// organizations table, plus the closed set of migration-24 legacy aliases so
+// links shared before migration 38 still work.
 export async function GET(req: NextRequest) {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
@@ -21,31 +24,24 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Too many attempts. Please wait a moment.' }, { status: 429 });
     }
 
-    const code = normalizeJoinCode(req.nextUrl.searchParams.get('code'));
-    if (!code) {
-      return NextResponse.json({ error: 'This join link is not valid.' }, { status: 400 });
-    }
-
     const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    const { data: org, error } = await supabaseAdmin
-      .schema('kunity')
-      .from('organizations')
-      .select('id, name, is_active')
-      .eq('join_code', code)
-      .maybeSingle();
+    const resolution = await resolveJoinCodeToOrg(supabaseAdmin, req.nextUrl.searchParams.get('code'));
 
-    if (error) {
-      console.error('[organizations/resolve] lookup failed:', error);
+    if (resolution.status === 'invalid') {
+      return NextResponse.json({ error: 'This join link is not valid.' }, { status: 400 });
+    }
+    if (resolution.status === 'error') {
+      console.error('[organizations/resolve] lookup failed:', resolution.message);
       return NextResponse.json({ error: 'Could not check this link. Please try again.' }, { status: 500 });
     }
-    if (!org || !org.is_active) {
+    if (resolution.status === 'not_found' || !resolution.org.is_active) {
       return NextResponse.json({ error: 'This join link is invalid or no longer active. Ask your SACCO for a new link.' }, { status: 404 });
     }
 
-    return NextResponse.json({ organization: { id: org.id, name: org.name } });
+    return NextResponse.json({ organization: { id: resolution.org.id, name: resolution.org.name } });
   } catch (err: unknown) {
     console.error('GET /api/organizations/resolve error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

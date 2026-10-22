@@ -411,6 +411,11 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         setSmsMessageText('');
         await fetchAdminData();
       } else {
+        // A dispatch that sent nothing (e.g. gateway down) is retryable: drop
+        // the draft's request ID so the next attempt is not refused as a repeat.
+        if (typeof data.sentCount === 'number' && data.sentCount === 0) {
+          smsRequestIdRef.current = null;
+        }
         setToastMessage({ type: 'error', text: data.error || 'Failed to dispatch SMS' });
       }
     } catch (err: any) {

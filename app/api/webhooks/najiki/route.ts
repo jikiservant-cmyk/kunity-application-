@@ -438,26 +438,28 @@ export async function POST(req: Request) {
               ? `Dear {{first_name}}, we have received your membership activation fee of UGX {{amount}}. TxRef: {{tx_ref}}. Thank you!`
               : `Dear {{first_name}}, your {{payment_type}} of UGX {{amount}} has been received and credited to your SACCO account successfully. TxRef: {{tx_ref}}. Thank you!`;
             
-            const { inngest } = await import('../../../../lib/inngest/client');
-            await inngest.send({
-              // Replays of the same NaJiki event must not send a second SMS.
-              id: `deposit-sms-${reference}`,
-              name: 'sms/dispatch',
-              data: {
-                tenantId: depInfo.organization_id,
-                recipientPhone: phone,
-                message: messageText,
-                eventType: isActivation ? 'ACTIVATION_RECEIPT' : 'DEPOSIT_ALERT',
-                originUrl: req.url,
-                templateData: {
-                  first_name: firstName,
-                  amount: formattedAmount,
-                  tx_ref: reference,
-                  payment_type: typeLabel
-                }
-              }
+            const { sendSms } = await import('../../../../lib/sms');
+            const sms = await sendSms({
+              // Replays of the same NaJiki event must not send a second SMS:
+              // the key deduplicates both the wallet debit and the gateway dispatch.
+              tenantId: depInfo.organization_id,
+              recipientPhone: phone,
+              message: messageText,
+              eventType: isActivation ? 'ACTIVATION_RECEIPT' : 'DEPOSIT_ALERT',
+              originUrl: req.url,
+              templateData: {
+                first_name: firstName,
+                amount: formattedAmount,
+                tx_ref: reference,
+                payment_type: typeLabel
+              },
+              idempotencyKey: `deposit-sms-${reference}`
             });
-            console.log(`[SMS Webhook] Deposit SMS alert successfully queued in Inngest for ${phone} (TxRef: ${reference})`);
+            if (sms.success) {
+              console.log(`[SMS Webhook] Deposit SMS alert dispatched to NaJiki for ${phone} (TxRef: ${reference})`);
+            } else {
+              console.warn(`[SMS Webhook] Deposit SMS alert failed for ${phone} (TxRef: ${reference}): ${sms.error}`);
+            }
           } else {
             console.warn(`[Najiki Webhook] No phone number recorded for member ${depInfo.member_id}. Skipping SMS.`);
           }

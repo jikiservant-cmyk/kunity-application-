@@ -1,6 +1,6 @@
 # Kunity SACCO Operating System
 
-A multi-tenant Savings and Credit Cooperative (SACCO) management platform built with Next.js 14/15, Tailwind CSS, Supabase (PostgreSQL), and integrated with mobile money payment providers (NaJiki, LivePay) and background event workers (Inngest).
+A multi-tenant Savings and Credit Cooperative (SACCO) management platform built with Next.js 14/15, Tailwind CSS, Supabase (PostgreSQL), and integrated with the NaJiki mobile money and SMS gateway.
 
 ## Architecture & Multi-Tenancy
 
@@ -57,8 +57,6 @@ cp .env.example .env.local
 | :--- | :--- |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL for distributed multi-instance rate limiting |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
-| `INNGEST_EVENT_KEY` | Inngest event key for reliable asynchronous background jobs (SMS dispatch, reconciliations) |
-| `INNGEST_SIGNING_KEY` | Inngest webhook signing key |
 | `ALLOW_INSECURE_WEBHOOKS` | Set to `"false"` in production. Set to `"true"` only for isolated local testing without HMAC signatures. |
 
 For the exact NaJiki API/webhook contract, callback URL configuration, dedicated signing secret, `BUY_SMS` payment-type requirement, and staging checklist, see [`docs/integrations/najiki-webhooks.md`](docs/integrations/najiki-webhooks.md).

@@ -221,6 +221,85 @@ export default function MemberDashboard() {
     type: 'account_activation' | 'deposit';
   } | null>(null);
 
+  // Payment watcher: while the "Confirm on your phone" overlay is up, poll our
+  // own status endpoint so the screen reflects the webhook's verdict. The
+  // gateway webhook can land within seconds (success OR failure — e.g. the
+  // member's mobile-money account had insufficient funds); without this poll
+  // the overlay stayed on "waiting" forever even after the payment failed.
+  // The endpoint reports 'success' only once our ledger has credited the money
+  // (FIN-35), so a gateway-success while the webhook is still in flight comes
+  // back as 'processing' and we keep waiting.
+  useEffect(() => {
+    if (!promptPayment || promptPayment.status !== 'pending') return;
+    let cancelled = false;
+    let consecutiveErrors = 0;
+    const FAILURE_STATUSES = ['failed', 'failure', 'cancelled', 'canceled', 'expired', 'rejected'];
+    // Hard cap: if no verdict arrives (lost webhook, member walked away), the
+    // overlay must not spin forever. Closing is safe — no failure charges money,
+    // and a late success still lands in the wallet.
+    const deadline = Date.now() + 5 * 60 * 1000;
+
+    const settle = (status: 'success' | 'failed') => {
+      if (cancelled) return;
+      cancelled = true;
+      clearInterval(timer);
+      setPromptPayment((p) => (p && p.status === 'pending' ? { ...p, status } : p));
+    };
+
+    const pollOnce = async () => {
+      if (cancelled) return;
+      if (Date.now() > deadline) {
+        settle('failed');
+        return;
+      }
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          cancelled = true;
+          clearInterval(timer);
+          alert('Your session has expired. Please log in again.');
+          router.push('/auth');
+          return;
+        }
+        const res = await fetch(`/api/payments/${encodeURIComponent(promptPayment.id)}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        // Our own API refused the poll: stop instead of hammering it. A 403 here
+        // means the intent no longer maps to this member — show the failure
+        // screen rather than an eternal spinner.
+        if (res.status === 403) {
+          settle('failed');
+          return;
+        }
+        if (!res.ok) {
+          consecutiveErrors++;
+          if (consecutiveErrors >= 10) settle('failed');
+          return;
+        }
+        const json = await res.json();
+        const s = String(json?.status || '').toLowerCase();
+        consecutiveErrors = 0;
+        if (s === 'success' || s === 'successful') {
+          settle('success');
+        } else if (FAILURE_STATUSES.includes(s)) {
+          settle('failed');
+        }
+        // 'pending' / 'processing' / anything unknown: keep waiting.
+      } catch {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 10) settle('failed');
+      }
+    };
+
+    const timer = setInterval(pollOnce, 3000);
+    pollOnce();
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // Re-arm only when a NEW payment starts; terminal statuses exit above.
+  }, [promptPayment?.id, promptPayment?.status]);
+
   const renderPinOverlay = () => {
     if (!promptPayment) return null;
     return (

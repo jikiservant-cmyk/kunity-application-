@@ -4,7 +4,7 @@ import { verifyAdminAndTenant } from '@/lib/admin-auth';
 import { smsSendLimiter } from '@/lib/rate-limit';
 import { logAudit } from '@/lib/audit-logger';
 import { smsSegments } from '@/lib/sms-segments';
-import { claimIdempotencyKey, isValidIdempotencyKey } from '@/lib/sms-idempotency';
+import { claimIdempotencyKey, isValidIdempotencyKey, releaseIdempotencyKey } from '@/lib/sms-idempotency';
 import { normalizeUgandanPhone } from '@/lib/validators';
 
 // SECURITY (pentest 2026-10-13, messaging): limits on a single broadcast.
@@ -295,8 +295,8 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // 5. Queue SMS dispatches via Inngest
-    // Claim the request ID before anything is queued. A repeat is refused, nothing is sent.
+    // 5. Dispatch the SMS directly through the shared SMS service (NaJiki).
+    // Claim the request ID before anything is dispatched. A repeat is refused, nothing is sent.
     if (requestId) {
       const claim = await claimIdempotencyKey(supabaseAdmin, `broadcast:${tenantId}`, requestId);
       if (claim.error) {
@@ -307,32 +307,49 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { inngest } = await import('@/lib/inngest/client');
-    const events = recipients.map(recipient => ({
-      // Inngest drops a repeated event id, so a retried queue step cannot dispatch twice.
-      ...(requestId ? { id: `broadcast-${requestId}-${normalizeUgandanPhone(recipient.phone).phone}` } : {}),
-      name: 'sms/dispatch' as const,
-      data: {
-        tenantId,
-        recipientPhone: recipient.phone,
-        templateData: { first_name: recipient.firstName || '', last_name: recipient.lastName || '' },
-        message,
-        eventType: 'BROADCAST',
-        originUrl: req.nextUrl.origin
+    const { sendSms } = await import('@/lib/sms');
+    let sentCount = 0;
+    let lastError = '';
+    // Bounded concurrency: wallet debits are idempotent per recipient key, so
+    // parallel dispatch cannot double-charge; the cap keeps the request from
+    // opening hundreds of simultaneous gateway connections.
+    const DISPATCH_CONCURRENCY = 10;
+    for (let i = 0; i < recipients.length; i += DISPATCH_CONCURRENCY) {
+      const batch = recipients.slice(i, i + DISPATCH_CONCURRENCY);
+      const results = await Promise.all(batch.map((recipient) =>
+        sendSms({
+          tenantId,
+          recipientPhone: recipient.phone,
+          templateData: { first_name: recipient.firstName || '', last_name: recipient.lastName || '' },
+          message,
+          eventType: 'BROADCAST',
+          originUrl: req.nextUrl.origin,
+          // The wallet debit and the gateway both recognise a retried
+          // recipient as a replay, so a repeat cannot charge or send twice.
+          idempotencyKey: requestId
+            ? `broadcast-${requestId}-${normalizeUgandanPhone(recipient.phone).phone}`
+            : undefined
+        }).catch((dispatchErr) => ({ success: false, error: dispatchErr?.message || String(dispatchErr) }))
+      ));
+      for (const result of results) {
+        if (result.success) sentCount++;
+        else lastError = result.error || 'dispatch failed';
       }
-    }));
+    }
 
-    for (let i = 0; i < events.length; i += 100) {
-      const batch = events.slice(i, i + 100);
-      try {
-        await inngest.send(batch);
-      } catch (queueErr) {
-        // Earlier batches may already be queued, so the request ID stays claimed.
-        console.error('[sms-broadcast] queueing failed:', queueErr);
-        return NextResponse.json({
-          error: 'The broadcast could not be fully queued. Some messages may already have been sent. Check the SMS log before trying again.'
-        }, { status: 502 });
+    if (sentCount < recipients.length) {
+      console.error(`[sms-broadcast] dispatch incomplete: ${sentCount}/${recipients.length} sent. Last error: ${lastError}`);
+      // Not a single message went out: release the claimed request ID so the
+      // admin can retry the same draft instead of being locked out by a 409.
+      // (Partial dispatch keeps the claim — some members already received it.)
+      if (sentCount === 0 && requestId) {
+        await releaseIdempotencyKey(supabaseAdmin, `broadcast:${tenantId}`, requestId);
       }
+      return NextResponse.json({
+        error: `The broadcast could not be fully dispatched: ${sentCount} of ${recipients.length} messages were sent. Check the SMS log before trying again.`,
+        sentCount,
+        failedCount: recipients.length - sentCount
+      }, { status: 502 });
     }
 
     await logAudit(supabaseAdmin, {
