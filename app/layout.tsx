@@ -1,6 +1,8 @@
-import type {Metadata} from 'next';
+import type {Metadata, Viewport} from 'next';
 import { Inter, Space_Grotesk } from 'next/font/google';
 import './globals.css'; // Global styles
+import PwaRegister from './pwa-register';
+import InstallPrompt from './install-prompt';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-display' });
@@ -8,10 +10,22 @@ const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-displ
 export const metadata: Metadata = {
   title: 'Sacco Connect',
   description: 'Manage Sacco wallets, loans, and transaction tracking with ease.',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    title: 'Sacco Connect',
+    statusBarStyle: 'default',
+  },
   openGraph: {
     title: 'Sacco Connect',
     description: 'Manage Sacco wallets, loans, and transaction tracking with ease.',
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#7C2D12',
+  width: 'device-width',
+  initialScale: 1,
 };
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
@@ -31,6 +45,8 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
           }}
         />
         {children}
+        <PwaRegister />
+        <InstallPrompt />
       </body>
     </html>
   );
