@@ -23,8 +23,12 @@ export const config = {
      *   requests to /auth, which would break the signup SACCO selector.)
      * - api/health (deployment/configuration probe: must answer without a session
      *   and without spending a Supabase getUser() round trip on every uptime check)
+     * - manifest.webmanifest, sw.js, apple-icon, icons (PWA install assets: the
+     *   browser fetches these BEFORE any session exists - a redirect to /auth
+     *   here silently breaks installability for logged-out users. Caught live
+     *   by test/pwa-install-tests.mjs.)
      * Feel free to modify this pattern to include more paths.
      */
-    "/((?!_next/static|_next/image|favicon.ico|api/auth/profile|api/webhooks|api/internal|api/organizations|api/health|api/messaging|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth/profile|api/webhooks|api/internal|api/organizations|api/health|api/messaging|manifest\\.webmanifest|sw\\.js|apple-icon|icons|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

@@ -258,9 +258,20 @@ node test/signup-flow-e2e-tests.mjs
 # (never a dead page or a re-run "User already registered"); the card follows
 # the reference debit-card design with the SACCO as the brand and the member
 # as cardholder, while the wallet balance survives beneath it. Also pins the
-# small-screen behaviour: dimensions unchanged, every interior metric fluid
-# (clamp), so no row is ever clipped on a phone. Expected: 30 passed.
+# small-screen behaviour: dimensions unchanged, the interior a proportional
+# scale model (container-query cqw units with pinned line heights), plus an
+# exact numeric simulation across phone widths (300-460px) proving no row can
+# be clipped. Expected: 31 passed.
 node test/signup-completion-and-card-tests.mjs
+
+# PWA installability: manifest (app/manifest.ts), service worker
+# (public/sw.js), registration, and the must-ask install prompt
+# (app/install-prompt.tsx). Static checks include that every declared icon is
+# a REAL PNG with matching pixel dimensions; the live pass proves a real dev
+# server serves /manifest.webmanifest, /sw.js, the icons, and the manifest /
+# theme-color / apple-touch-icon tags to a LOGGED-OUT visitor (the state the
+# browser's installer is in). Expected: 30 passed.
+node test/pwa-install-tests.mjs
 
 # Optional live smoke (slower, spawns a real dev server on port 3432): proves
 # /admin/books compiles and answers 200 for a signed-in admin behind the

@@ -11,8 +11,9 @@
 // SACCO's name as the brand, the member's name as cardholder — while the
 // wallet balance (with its show/hide toggle and the savings/loan figures)
 // survives directly beneath it. Part 3 pins the small-screen behaviour: the
-// card keeps its exact dimensions while every interior metric is fluid, so no
-// row is ever clipped on a phone.
+// card keeps its exact dimensions while the interior is a proportional scale
+// model (container-query cqw units with pinned line heights), and an exact
+// numeric simulation across phone widths proves nothing can be clipped.
 //
 // Run: node test/signup-completion-and-card-tests.mjs
 // -----------------------------------------------------------------------------
@@ -82,9 +83,10 @@ check(
 );
 
 check(
-  'rotated ellipse decorations present (two, with the reference shadows)',
+  'rotated ellipse decorations present (two, scaled with the card in cqw)',
   (member.match(/rotate\(-35deg\)/g) || []).length >= 2 &&
-  /0 0 0 32px rgba\(255,255,255,\.018\)/.test(member)
+  /0 0 0 7cqw rgba\(255,255,255,\.018\)/.test(member) &&
+  /0 0 0 13\.9cqw rgba\(255,255,255,\.015\)/.test(member)
 );
 
 check(
@@ -127,7 +129,7 @@ check(
 
 check(
   'illustrative network circles: red #eb202d + orange #ff9f0a overlapping',
-  member.includes('#eb202d') && member.includes('#ff9f0a') && member.includes('-17px')
+  member.includes('#eb202d') && member.includes('#ff9f0a') && member.includes('-3.7cqw')
 );
 
 check(
@@ -160,51 +162,97 @@ check(
 );
 
 check(
-  'card padding is fluid (was fixed 28px 30px — clipped interiors on phones)',
-  /padding: "clamp\(16px, 6vw, 28px\) clamp\(18px, 6\.5vw, 30px\)"/.test(member)
+  'card is a CSS size container (containerType) — interior scales with the CARD, not the viewport',
+  /containerType: "inline-size"/.test(member)
 );
 
 check(
-  'brand text and mark scale down (clamp, not fixed 23px/31px)',
-  /fontSize: "clamp\(14px, 5vw, 23px\)"/.test(member) &&
-  /fontSize: "clamp\(19px, 6\.7vw, 31px\)"/.test(member)
+  'padding is proportional (cqw), not fixed or viewport-clamped',
+  /padding: "6\.1cqw 6\.5cqw"/.test(member)
 );
 
 check(
-  'chip scales down and its etched lines are percentage-based',
-  /width: "clamp\(42px, 12\.2vw, 56px\)"/.test(member) &&
-  /height: "clamp\(32px, 9\.1vw, 42px\)"/.test(member) &&
-  /left: "32%", right: "32%"/.test(member) && /top: "31%", height: "33%"/.test(member)
+  'brand text, mark and label are proportional (5cqw / 6.7cqw / 2.2cqw)',
+  /fontSize: "5cqw"/.test(member) && /fontSize: "6\.7cqw"/.test(member) && /fontSize: "2\.2cqw"/.test(member)
 );
 
 check(
-  'contactless glyph scales down (was fixed 31px)',
-  /fontSize: "clamp\(20px, 6\.7vw, 31px\)"/.test(member)
+  'chip (12.2x9.1cqw) and contactless glyph (6.7cqw) are proportional, etched lines percentage-based',
+  /width: "12\.2cqw", height: "9\.1cqw"/.test(member) &&
+  /left: "32%", right: "32%"/.test(member) && /top: "31%", height: "33%"/.test(member) &&
+  /fontSize: "6\.7cqw", lineHeight: "8\.2cqw", transform: "rotate\(90deg\)"/.test(member)
 );
 
 check(
-  'network circles scale down (was fixed 43px) with proportional overlap',
-  /clamp\(30px, 9\.3vw, 43px\)/.test(member) &&
-  /marginLeft: "clamp\(-17px, -3\.7vw, -12px\)"/.test(member)
+  'network circles proportional (9.35cqw) with proportional overlap (-3.7cqw)',
+  /9\.35cqw/.test(member) && /marginLeft: "-3\.7cqw"/.test(member)
 );
 
 check(
-  'row gaps scale down (middle gap reaches the reference 28px at full width)',
-  /marginTop: "clamp\(12px, 6vw, 28px\)"/.test(member) &&
-  /marginTop: "clamp\(8px, 3\.7vw, 17px\)"/.test(member)
-);
-
-check(
-  'cardholder/expiry text scales down (labels, name, dates)',
-  /fontSize: "clamp\(7px, 1\.95vw, 9px\)"/.test(member) &&
-  /fontSize: "clamp\(10px, 2\.8vw, 13px\)"/.test(member) &&
-  /fontSize: "clamp\(6px, 1\.2vw, 7px\)"/.test(member)
+  'EVERY text element pins lineHeight in cqw — stack height is deterministic',
+  /lineHeight: "8\.2cqw"/.test(member) && /lineHeight: "6\.4cqw"/.test(member) &&
+  /lineHeight: "2\.8cqw"/.test(member) && /lineHeight: "2\.5cqw"/.test(member) &&
+  /lineHeight: "3\.6cqw"/.test(member) && (member.match(/lineHeight: "[\d.]+cqw"/g) || []).length >= 7
 );
 
 check(
   'long SACCO names ellipsize instead of colliding with the DEBIT CARD label',
   (member.match(/textOverflow: "ellipsis"/g) || []).length >= 2 &&
   /minWidth: 0, overflow: "hidden", textOverflow: "ellipsis"/.test(member)
+);
+
+// ---- exact layout simulation across phone widths ---------------------------
+// Because every box is now a fixed cqw value (font sizes AND line heights),
+// the interior stack height is deterministic — no font-metric or OS
+// font-scaling guesswork. Parse the real values out of the source and prove
+// the stack fits the card with slack at every width.
+const num = (re, label) => {
+  const m = member.match(re);
+  if (!m) throw new Error('could not parse ' + label);
+  return parseFloat(m[1]);
+};
+const padV = num(/padding: "([\d.]+)cqw [\d.]+cqw"/, 'padding');
+const markLine = num(/fontSize: "6\.7cqw", lineHeight: "([\d.]+)cqw"/, 'mark line-height');
+const chipTop = num(/gap: "4\.3cqw", marginTop: "([\d.]+)cqw"/, 'chip row margin');
+const chipH = num(/width: "12\.2cqw", height: "([\d.]+)cqw"/, 'chip height');
+const numTop = num(/marginTop: "([\d.]+)cqw", fontSize: "5cqw", lineHeight: "6\.4cqw", letterSpacing: "0\.55cqw"/, 'number margin');
+const numLine = num(/fontSize: "5cqw", lineHeight: "([\d.]+)cqw", letterSpacing: "0\.55cqw"/, 'number line-height');
+const bottomTop = num(/alignItems: "flex-end", marginTop: "([\d.]+)cqw"/, 'bottom row margin');
+const labelLine = num(/fontSize: "1\.96cqw", lineHeight: "([\d.]+cqw)"/, 'label line-height');
+const labelMB = num(/marginBottom: "([\d.]+)cqw"\s*\}\}>CARDHOLDER/, 'label margin');
+const nameLine = num(/fontSize: "2\.83cqw", lineHeight: "([\d.]+)cqw", letterSpacing: "0\.4cqw"/, 'name line-height');
+const sinceTop = num(/marginTop: "([\d.]+)cqw", fontSize: "2\.83cqw"/, 'since margin');
+const sinceLine = num(/fontSize: "2\.83cqw", lineHeight: "([\d.]+)cqw", letterSpacing: "1px"/, 'since line-height');
+
+// Row heights (cqw): each flex row is its tallest fixed box.
+const brandRow = markLine;                                  // mark line box is tallest
+const chipRow = chipTop + chipH;
+const numberRow = numTop + numLine;
+const bottomRow = bottomTop + labelLine + labelMB + nameLine + sinceTop + sinceLine;
+const stack = brandRow + chipRow + numberRow + bottomRow;
+const innerHeight = 100 / 1.586 - 2 * padV;
+const slack = innerHeight - stack;
+
+check(
+  `interior stack fits the card with >=1.5cqw slack (stack ${stack.toFixed(2)}cqw of ${innerHeight.toFixed(2)}cqw available, slack ${slack.toFixed(2)}cqw)`,
+  slack >= 1.5,
+  `stack ${stack.toFixed(2)}cqw, available ${innerHeight.toFixed(2)}cqw`
+);
+
+let simOk = true;
+const simDetail = [];
+for (const w of [300, 320, 360, 375, 390, 412, 428, 460]) {
+  const cardH = w / 1.586;
+  const box = cardH - 2 * (padV / 100) * w;
+  const content = (stack / 100) * w;
+  const fits = content <= box - (1.5 / 100) * w;
+  if (!fits) simOk = false;
+  simDetail.push(`${w}px: content ${content.toFixed(1)}px in ${box.toFixed(1)}px box`);
+}
+console.log('      simulation: ' + simDetail.join(' | '));
+check(
+  'every row fits at real phone widths 300-460px (deterministic — line heights are pinned)',
+  simOk
 );
 
 console.log(`\nRESULTS: ${passed}/${passed + failed} passed`);
