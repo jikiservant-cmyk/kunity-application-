@@ -13,7 +13,7 @@ import {
   Search, TrendingUp, Sparkles, ChevronRight,
   Filter, Check, UserCheck, UserX, Clock, Calendar, Phone, Mail, 
   FileText, Coins, Award, HelpCircle, Layers, ArrowRight, ExternalLink,
-  ChevronDown, Bell, MessageSquare, Plus, Loader2, Download
+  ChevronDown, Bell, MessageSquare, Plus, Loader2, Download, FileSpreadsheet
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -63,8 +63,19 @@ const ADMIN_NAV_ITEMS: AdminNavigationItem[] = [
   { key: 'approvals', label: 'Approvals', href: '/admin/approvals', Icon: UserCheck },
   { key: 'members', label: 'Members', href: '/admin/members', Icon: Users },
   { key: 'loans', label: 'Loans', href: '/admin/loans', Icon: CreditCard },
+  { key: 'books', label: 'Books', href: '/admin/books', Icon: FileSpreadsheet },
   { key: 'sms', label: 'SMS', href: '/admin/sms', Icon: Send },
   { key: 'tenant', label: 'Settings', href: '/admin/settings', Icon: Shield },
+];
+
+/* ── SACCO Books: the six downloadable reports (GET /api/admin/export) ── */
+const BOOK_REPORTS: { key: string; label: string; description: string; Icon: LucideIcon }[] = [
+  { key: 'ledger', label: 'General Ledger', description: 'The complete double-entry journal — every debit and credit with references, accounts and members.', Icon: Layers },
+  { key: 'deposits', label: 'Deposits & Payments', description: 'Every deposit and activation fee with member, phone, status, provider and reference.', Icon: ArrowDownLeft },
+  { key: 'members', label: 'Member Register', description: 'The full membership roll — member numbers, names, phones, national IDs and statuses.', Icon: Users },
+  { key: 'loans', label: 'Loans Book', description: 'Principal, interest and status per loan, with repaid and outstanding computed from installments.', Icon: CreditCard },
+  { key: 'savings', label: 'Savings Accounts', description: 'Per-member savings products, interest rates, account codes and balances.', Icon: TrendingUp },
+  { key: 'sms', label: 'SMS Message Log', description: 'Every message sent by this SACCO with its event type, delivery status and cost.', Icon: MessageSquare },
 ];
 
 export default function AdminConsole({ initialTab = 'overview' }: { initialTab?: AdminConsoleTab }) {
@@ -949,60 +960,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         ───────────────────────────────────────────────────────────── */}
 
         {activeTab === 'overview' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          <div style={{
-            background: T.card,
-            borderRadius: 24,
-            padding: '22px 24px',
-            boxShadow: '0 4px 24px rgba(5,7,26,0.06), 0 1px 4px rgba(5,7,26,0.04)',
-            display: 'flex',
-            flexWrap: 'wrap',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 16
-          }}>
-            <div>
-              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 800, color: T.cMid }}>
-                Records &amp; Compliance
-              </div>
-              <h2 style={{ fontSize: 20, fontWeight: 900, margin: '4px 0 0', color: T.text }}>
-                Download SACCO Books
-              </h2>
-              <p style={{ fontSize: 13, color: T.sub, margin: '4px 0 0', maxWidth: 520 }}>
-                Full exports of this SACCO&apos;s records as CSV for Excel or Google Sheets — ledgers, deposits, members, loans, savings and the SMS log.
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {([
-                { key: 'ledger', label: 'General Ledger' },
-                { key: 'deposits', label: 'Deposits & Payments' },
-                { key: 'members', label: 'Member Register' },
-                { key: 'loans', label: 'Loans Book' },
-                { key: 'savings', label: 'Savings Accounts' },
-                { key: 'sms', label: 'SMS Log' },
-              ] as const).map(({ key, label }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => downloadReport(key)}
-                  disabled={exportingReport !== null}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 7,
-                    padding: '10px 14px', borderRadius: 12,
-                    background: exportingReport === key ? T.blueLt : T.cardWarm,
-                    color: T.cRich, fontWeight: 700, fontSize: 13,
-                    border: '1px solid rgba(22,119,255,0.25)',
-                    cursor: exportingReport !== null ? 'wait' : 'pointer',
-                  }}
-                >
-                  {exportingReport === key
-                    ? <Loader2 size={15} className="animate-spin" />
-                    : <Download size={15} />}
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
           <AdminOverview
             saccoName={saccoName}
             greeting={greeting}
@@ -1017,7 +974,6 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
             onToggleBalances={() => setHideBalances((current) => !current)}
             onNavigate={navigateAdmin}
           />
-          </div>
         )}
 
         {/* ───────────────────────────────────────────────────────────
@@ -1488,6 +1444,109 @@ New members become active automatically when they pay the activation fee. Declin
         {/* ───────────────────────────────────────────────────────────
             TAB 5: SMS BROADCAST & COMMUNICATION
         ─────────────────────────────────────────────────────────── */}
+        {/* ─────────────────────────────────────────────────────────────
+            TAB: SACCO BOOKS — dedicated full-page document downloads
+        ───────────────────────────────────────────────────────────── */}
+        {activeTab === 'books' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+            {/* Header Banner */}
+            <div style={{
+              background: `linear-gradient(135deg, ${T.cDeep} 0%, ${T.cRich} 100%)`,
+              borderRadius: 24,
+              padding: '28px 26px',
+              color: 'white',
+              boxShadow: `0 8px 28px ${T.cDeep}20`,
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 16
+            }}>
+              <div>
+                <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 800, color: T.goldLt }}>
+                  Records &amp; Compliance
+                </span>
+                <h2 style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 24, fontWeight: 900, margin: '6px 0 0', color: 'white' }}>
+                  SACCO Books
+                </h2>
+                <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', marginTop: 4, margin: 0, maxWidth: 540 }}>
+                  Full exports of this SACCO&apos;s records as CSV for Excel or Google Sheets — ledgers, deposits, members, loans, savings and the SMS log.
+                </p>
+              </div>
+              <div style={{
+                backgroundColor: 'rgba(255,255,255,0.15)',
+                backdropFilter: 'blur(8px)',
+                borderRadius: 18,
+                padding: '14px 20px',
+                textAlign: 'center',
+                border: '1px solid rgba(255,255,255,0.2)'
+              }}>
+                <div style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700, color: 'rgba(255,255,255,0.8)' }}>
+                  Available Books
+                </div>
+                <div style={{ fontFamily: 'var(--font-display), sans-serif', fontSize: 28, fontWeight: 900, color: 'white', marginTop: 2 }}>
+                  {BOOK_REPORTS.length}
+                </div>
+              </div>
+            </div>
+
+            {/* Report cards */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280, 1fr))', gap: 16 }}>
+              {BOOK_REPORTS.map(({ key, label, description, Icon }) => (
+                <div key={key} style={{
+                  background: T.card,
+                  borderRadius: 20,
+                  padding: '20px 20px 18px',
+                  boxShadow: '0 4px 24px rgba(5,7,26,0.06), 0 1px 4px rgba(5,7,26,0.04)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 12
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{
+                      width: 42, height: 42, borderRadius: 13, flexShrink: 0,
+                      background: T.blueLt,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center'
+                    }}>
+                      <Icon size={20} color={T.cRich} />
+                    </div>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, margin: 0, color: T.text }}>
+                      {label}
+                    </h3>
+                  </div>
+                  <p style={{ fontSize: 13, color: T.sub, lineHeight: 1.55, margin: 0, flex: 1 }}>
+                    {description}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => downloadReport(key)}
+                    disabled={exportingReport !== null}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      width: '100%', padding: '11px 14px', borderRadius: 12,
+                      background: exportingReport === key ? T.blueLt : T.cRich,
+                      color: exportingReport === key ? T.cRich : 'white',
+                      fontWeight: 700, fontSize: 13,
+                      border: 'none',
+                      cursor: exportingReport !== null ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {exportingReport === key
+                      ? <Loader2 size={15} className="animate-spin" />
+                      : <Download size={15} />}
+                    {exportingReport === key ? 'Preparing…' : 'Download CSV'}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <p style={{ fontSize: 12, color: T.sub, textAlign: 'center', margin: 0 }}>
+              CSV opens directly in Excel and Google Sheets · every download is audit-logged
+            </p>
+          </div>
+        )}
+
         {activeTab === 'sms' && (
           <AdminSmsWorkspace
             saccoName={saccoName}
