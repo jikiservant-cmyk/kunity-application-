@@ -3,13 +3,20 @@
 import { useState, Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { Wallet, Loader2 } from 'lucide-react';
+import { Wallet, Loader2, Landmark } from 'lucide-react';
 import Link from 'next/link';
 
 function AuthContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+
+  // Join-link landing (/auth?sacco=<code> or /auth?mode=register): open
+  // DIRECTLY on the signup form. Initialised from the URL in the state
+  // initialiser — not flipped in a post-mount effect — so a member opening
+  // an invite link never sees the login card flash first.
+  const [mode, setMode] = useState<'login' | 'register'>(() =>
+    searchParams.get('mode') === 'register' || searchParams.get('sacco') ? 'register' : 'login'
+  );
 
   useEffect(() => {
     if (searchParams.get('mode') === 'register' || searchParams.get('sacco')) {
@@ -284,12 +291,12 @@ function AuthContent() {
             <Wallet className="w-8 h-8" style={{ color: T.goldLt }} />
           </div>
           <h2 className="text-2xl font-bold text-white tracking-tight mb-2">
-            {mode === 'login' ? 'Welcome Back' : (step === 1 ? 'Create Account' : 'Select Sacco')}
+            {mode === 'login' ? 'Welcome Back' : (step === 1 ? 'Create Account' : 'Complete Your Details')}
           </h2>
           <p className="text-sm leading-relaxed" style={{ color: 'rgba(255,255,255,0.7)' }}>
             {mode === 'login' 
               ? 'Sign in to access your wallet and cooperative finances.' 
-              : (step === 1 ? 'Start managing your cooperative finances today.' : 'Choose a registered cooperative to join.')}
+              : (step === 1 ? 'Start managing your cooperative finances today.' : 'Finish setting up your SACCO membership.')}
           </p>
         </div>
 
@@ -300,7 +307,36 @@ function AuthContent() {
                 {error}
               </div>
             )}
-            
+
+            {/* Join-link context: which SACCO this signup is for. Shown from the
+                first screen (no waiting for step 2) on every register step.
+                Hidden when the link is dead — the error box above explains it. */}
+            {mode === 'register' && searchParams.get('sacco') && (joinCode || !error) && (
+              <div
+                className="flex items-center gap-3 p-4 rounded-2xl border"
+                style={{
+                  backgroundColor: joinCode ? '#FFF7ED' : '#F5F5F4',
+                  borderColor: joinCode ? '#FED7AA' : T.border,
+                }}
+              >
+                {joinCode ? (
+                  <Landmark className="w-5 h-5 shrink-0" style={{ color: T.gold }} />
+                ) : (
+                  <Loader2 className="w-5 h-5 shrink-0 animate-spin" style={{ color: T.sub }} />
+                )}
+                <div className="min-w-0">
+                  <div className="text-sm font-bold truncate" style={{ color: T.text }}>
+                    {joinCode ? `Joining ${orgName}` : 'Verifying your invite…'}
+                  </div>
+                  <div className="text-xs" style={{ color: T.sub }}>
+                    {joinCode
+                      ? 'You are signing up through this SACCO\u2019s invite link.'
+                      : 'Checking that this invite link is still valid.'}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {mode === 'register' && step === 1 && (
               <>
                 <div className="flex flex-col gap-2">
@@ -408,13 +444,8 @@ function AuthContent() {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold" style={{ color: T.text }}>Cooperative / Sacco</label>
-                  <div className="px-4 py-3.5 rounded-2xl font-bold" style={{ backgroundColor: T.card, border: `1px solid ${T.border}`, color: T.text }}>
-                    {orgName || 'Your SACCO'}
-                  </div>
-                  <span className="text-xs" style={{ color: T.sub }}>You are joining this SACCO through its invite link.</span>
-                </div>
+                {/* The SACCO being joined is shown in the invite banner at the
+                    top of the form — on this step and the previous one. */}
               </>
             )}
             

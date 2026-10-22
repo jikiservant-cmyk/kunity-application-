@@ -513,7 +513,19 @@ async function main() {
   stubPortGlobal = stub.port;
 
   // The pre-fix code, as members experienced it: a worktree of the branch point.
-  const oldSha = execFileSync('git', ['-C', ROOT, 'merge-base', 'HEAD', 'origin/main'], { encoding: 'utf8' }).trim() || '15ac3305e92d5d0f376091656529ca9545d0e95d';
+  // Pinned explicitly (PR #11's parent on main): merge-base HEAD origin/main is
+  // only correct while this branch is UNMERGED — once the fix lands on main it
+  // returns the fix itself and the BEFORE phase silently degrades (seen
+  // 2026-10-22: 29/31 with two artifact failures). Prefer the pin; fall back
+  // to merge-base only when the pinned commit is absent (shallow clones).
+  const PRE_FIX_SHA = '15ac3305e92d5d0f376091656529ca9545d0e95d';
+  let oldSha = '';
+  try {
+    execFileSync('git', ['-C', ROOT, 'cat-file', '-e', `${PRE_FIX_SHA}^{commit}`], { stdio: 'pipe' });
+    oldSha = PRE_FIX_SHA;
+  } catch {
+    oldSha = execFileSync('git', ['-C', ROOT, 'merge-base', 'HEAD', 'origin/main'], { encoding: 'utf8' }).trim();
+  }
   console.log(`Preparing pre-fix worktree at ${OLD_TREE} (${oldSha.slice(0, 8)})...`);
   execFileSync('git', ['-C', ROOT, 'worktree', 'prune'], { stdio: 'ignore' });
   rmSync(OLD_TREE, { recursive: true, force: true });
