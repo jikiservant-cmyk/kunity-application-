@@ -10,7 +10,9 @@
 // debit-card design — dark gradient, chip, contactless, member number, the
 // SACCO's name as the brand, the member's name as cardholder — while the
 // wallet balance (with its show/hide toggle and the savings/loan figures)
-// survives directly beneath it.
+// survives directly beneath it. Part 3 pins the small-screen behaviour: the
+// card keeps its exact dimensions while every interior metric is fluid, so no
+// row is ever clipped on a phone.
 //
 // Run: node test/signup-completion-and-card-tests.mjs
 // -----------------------------------------------------------------------------
@@ -125,7 +127,7 @@ check(
 
 check(
   'illustrative network circles: red #eb202d + orange #ff9f0a overlapping',
-  member.includes('#eb202d') && member.includes('#ff9f0a') && member.includes('marginLeft: -17')
+  member.includes('#eb202d') && member.includes('#ff9f0a') && member.includes('-17px')
 );
 
 check(
@@ -148,6 +150,61 @@ check(
 check(
   'old Chip() helper removed (new card has its own chip)',
   !/function Chip\(\)/.test(member)
+);
+
+console.log('Card on small screens (nothing clipped, dimensions unchanged)');
+
+check(
+  'card dimensions unchanged: width cap + aspect ratio intact',
+  /width: "min\(100%, 460px\)"/.test(member) && /aspectRatio: "1\.586 \/ 1"/.test(member)
+);
+
+check(
+  'card padding is fluid (was fixed 28px 30px — clipped interiors on phones)',
+  /padding: "clamp\(16px, 6vw, 28px\) clamp\(18px, 6\.5vw, 30px\)"/.test(member)
+);
+
+check(
+  'brand text and mark scale down (clamp, not fixed 23px/31px)',
+  /fontSize: "clamp\(14px, 5vw, 23px\)"/.test(member) &&
+  /fontSize: "clamp\(19px, 6\.7vw, 31px\)"/.test(member)
+);
+
+check(
+  'chip scales down and its etched lines are percentage-based',
+  /width: "clamp\(42px, 12\.2vw, 56px\)"/.test(member) &&
+  /height: "clamp\(32px, 9\.1vw, 42px\)"/.test(member) &&
+  /left: "32%", right: "32%"/.test(member) && /top: "31%", height: "33%"/.test(member)
+);
+
+check(
+  'contactless glyph scales down (was fixed 31px)',
+  /fontSize: "clamp\(20px, 6\.7vw, 31px\)"/.test(member)
+);
+
+check(
+  'network circles scale down (was fixed 43px) with proportional overlap',
+  /clamp\(30px, 9\.3vw, 43px\)/.test(member) &&
+  /marginLeft: "clamp\(-17px, -3\.7vw, -12px\)"/.test(member)
+);
+
+check(
+  'row gaps scale down (middle gap reaches the reference 28px at full width)',
+  /marginTop: "clamp\(12px, 6vw, 28px\)"/.test(member) &&
+  /marginTop: "clamp\(8px, 3\.7vw, 17px\)"/.test(member)
+);
+
+check(
+  'cardholder/expiry text scales down (labels, name, dates)',
+  /fontSize: "clamp\(7px, 1\.95vw, 9px\)"/.test(member) &&
+  /fontSize: "clamp\(10px, 2\.8vw, 13px\)"/.test(member) &&
+  /fontSize: "clamp\(6px, 1\.2vw, 7px\)"/.test(member)
+);
+
+check(
+  'long SACCO names ellipsize instead of colliding with the DEBIT CARD label',
+  (member.match(/textOverflow: "ellipsis"/g) || []).length >= 2 &&
+  /minWidth: 0, overflow: "hidden", textOverflow: "ellipsis"/.test(member)
 );
 
 console.log(`\nRESULTS: ${passed}/${passed + failed} passed`);
