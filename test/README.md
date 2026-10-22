@@ -253,6 +253,14 @@ node test/join-link-landing-tests.mjs
 # parent of PR #11) to reproduce the dead-link bug. Expected: 31 passed.
 node test/signup-flow-e2e-tests.mjs
 
+# Signup completion + the member's virtual account card. "Finish Setup" must
+# sign the member out and land them on the login screen with a success banner
+# (never a dead page or a re-run "User already registered"); the card follows
+# the reference debit-card design with the SACCO as the brand and the member
+# as cardholder, while the wallet balance survives beneath it. Expected: 21
+# passed.
+node test/signup-completion-and-card-tests.mjs
+
 # Optional live smoke (slower, spawns a real dev server on port 3432): proves
 # /admin/books compiles and answers 200 for a signed-in admin behind the
 # session proxy, using an inline GoTrue/admin_profiles stub. No assertions

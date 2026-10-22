@@ -144,7 +144,18 @@ function AuthContent() {
             }
           });
 
-          if (signUpError) throw signUpError;
+          if (signUpError) {
+            // A retry of an already-completed signup is common (slow network,
+            // double submit): point the member at the login screen instead of
+            // surfacing Supabase's raw "User already registered".
+            if (/already registered|already exists/i.test(signUpError.message || '')) {
+              setError('An account with this email already exists. Sign in with your credentials instead.');
+              setMode('login');
+              setLoading(false);
+              return;
+            }
+            throw signUpError;
+          }
           
           if (data.user) {
             setRegisteredUserId(data.user.id);
@@ -154,6 +165,17 @@ function AuthContent() {
             if (!token) {
               const { data: sessionData } = await supabase.auth.getSession();
               token = sessionData.session?.access_token;
+            }
+
+            if (!token) {
+              // Sign-up succeeded but Supabase returned no session — this
+              // project has email confirmation ON. The member profile cannot
+              // be finalized without a session token; tell the member exactly
+              // what to do next instead of surfacing a confusing 401.
+              setError('Account created! Check your email to confirm your address, then sign in to finish joining your SACCO.');
+              setMode('login');
+              setLoading(false);
+              return;
             }
 
             // Delegate profile and member creation to the backend
@@ -193,13 +215,17 @@ function AuthContent() {
               throw new Error(errMessage);
             }
             
-            // Wait for session to be fully confirmed before redirect
-            await supabase.auth.refreshSession();
+            // Registration complete: hand the member over to the login screen.
+            // The account (and pending membership) exists now — the member
+            // signs in with their credentials to reach the dashboard, and a
+            // stray double-submit can never re-run signup ("User already
+            // registered").
+            await supabase.auth.signOut();
             router.refresh();
-            
+
             setTimeout(() => {
-              router.push('/member');
-            }, 500);
+              router.push('/auth?registered=1');
+            }, 400);
           }
         }
       } else {
@@ -305,6 +331,14 @@ function AuthContent() {
             {error && (
               <div className="p-4 bg-red-50 text-red-600 text-sm rounded-2xl border border-red-100 font-medium">
                 {error}
+              </div>
+            )}
+
+            {/* Just finished signing up: confirm it worked and prompt the
+                credentials sign-in that gets them to the dashboard. */}
+            {searchParams.get('registered') === '1' && mode === 'login' && !error && (
+              <div className="p-4 bg-green-50 text-green-700 text-sm rounded-2xl border border-green-100 font-medium">
+                Account created! Sign in with your email and password to access your dashboard.
               </div>
             )}
 
