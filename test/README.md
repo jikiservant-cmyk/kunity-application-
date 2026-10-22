@@ -225,6 +225,13 @@ node_modules/.bin/tsx test/payment-waiting-screen-tests.mjs
 # proof the watcher ships in the compiled /member client bundle. Expected: 16 passed.
 node test/payment-waiting-screen-live-tests.mjs
 
+# LIVE replay of the member dashboard load (what runs right after Sign In):
+# session -> member -> savings/accounts -> activation failsafe + sync -> products
+# (+ setup) -> transactions -> loans, for an activated member, a fresh member, and
+# a SACCO without products. Proves the load always completes inside its 30s bound.
+# Expected: 9 passed.
+node test/member-page-load-live-tests.mjs
+
 # Adversarial regression checks; former exploit cases must now be refused.
 node test/money-engine-adversarial-tests.mjs
 node_modules/.bin/tsx test/money-engine-webhook-adversarial-tests.mjs
