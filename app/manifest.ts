@@ -7,8 +7,8 @@ import type { MetadataRoute } from 'next';
 // entry (maskable included so Android adaptive launchers crop cleanly).
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Sacco Connect',
-    short_name: 'Sacco Connect',
+    name: 'SaccoOs',
+    short_name: 'SaccoOs',
     description:
       'Manage Sacco wallets, savings, loans, and transaction tracking with ease.',
     start_url: '/',

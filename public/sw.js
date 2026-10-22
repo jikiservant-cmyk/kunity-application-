@@ -1,5 +1,5 @@
 /*
- * Kunity / Sacco Connect service worker.
+ * Kunity / SaccoOs service worker.
  *
  * Deliberately conservative so it can never break the app on Netlify:
  *   - GET same-origin only.

@@ -8,16 +8,16 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
 const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-display' });
 
 export const metadata: Metadata = {
-  title: 'Sacco Connect',
+  title: 'SaccoOs',
   description: 'Manage Sacco wallets, loans, and transaction tracking with ease.',
   manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
-    title: 'Sacco Connect',
+    title: 'SaccoOs',
     statusBarStyle: 'default',
   },
   openGraph: {
-    title: 'Sacco Connect',
+    title: 'SaccoOs',
     description: 'Manage Sacco wallets, loans, and transaction tracking with ease.',
   },
 };

@@ -267,11 +267,25 @@ node test/signup-completion-and-card-tests.mjs
 # PWA installability: manifest (app/manifest.ts), service worker
 # (public/sw.js), registration, and the must-ask install prompt
 # (app/install-prompt.tsx). Static checks include that every declared icon is
-# a REAL PNG with matching pixel dimensions; the live pass proves a real dev
-# server serves /manifest.webmanifest, /sw.js, the icons, and the manifest /
-# theme-color / apple-touch-icon tags to a LOGGED-OUT visitor (the state the
-# browser's installer is in). Expected: 30 passed.
+# a REAL PNG with matching pixel dimensions and that the installed app is
+# named SaccoOs everywhere (manifest, banner, titles; no "Sacco Connect"
+# remains); the live pass proves a real dev server serves
+# /manifest.webmanifest, /sw.js, the icons, and the manifest / theme-color /
+# apple-touch-icon tags to a LOGGED-OUT visitor (the state the browser's
+# installer is in). Expected: 34 passed.
 node test/pwa-install-tests.mjs
+
+# Session persistence: a login must survive hard refreshes, browser restarts,
+# and PWA relaunches until the member taps logout. Pins the fix for the
+# logout-on-every-refresh bug (duplicate partitioned cookie copies written by
+# the browser client + the middleware nuking cookies on any 400): static
+# checks on lib/supabase.ts + lib/supabase-middleware.ts, then a live pass
+# against a GoTrue stub with real refresh-token rotation — three hard
+# refreshes stay 200, an expired access token rotates through the stub and
+# hands back a working session cookie, a genuinely dead session (already-used
+# refresh token) is still cleaned up, and anonymous visits still redirect.
+# Expected: 12 passed.
+node test/session-persistence-tests.mjs
 
 # Optional live smoke (slower, spawns a real dev server on port 3432): proves
 # /admin/books compiles and answers 200 for a signed-in admin behind the

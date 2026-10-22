@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
       .eq('id', orgId)
       .maybeSingle();
 
-    const saccoName = kunityOrg?.name || tenantData?.name || 'SaccoConnect';
+    const saccoName = kunityOrg?.name || tenantData?.name || 'SaccoOs';
     const tenantCode = kunityOrg?.code || tenantData?.code || saccoName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     
     // SECURITY: the tenant application API key is developer-only. It is never

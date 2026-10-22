@@ -126,7 +126,7 @@ export default function InstallPrompt() {
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: '#1C1917' }}>
-              Install the Sacco Connect app
+              Install the SaccoOs app
             </div>
             <div style={{ fontSize: 12.5, color: '#78716C', marginTop: 3, lineHeight: 1.45 }}>
               {platform === 'prompt' &&
