@@ -239,6 +239,20 @@ node test/member-page-load-live-tests.mjs
 # Expected: 19 passed.
 npx -y tsx test/admin-export-csv-tests.mjs
 
+# Join-link landing page (/auth?sacco=<code>): opens directly on the signup
+# form (no login-card flash), shows the SACCO's name from the first screen on
+# every register step, verifying state while the invite resolves, and no
+# leftover "Select Sacco" wording. Expected: 9 passed.
+node test/join-link-landing-tests.mjs
+
+# Full sign-up flow, end to end against a real Next.js server and a stub
+# Supabase/NaJiki: resolves join links (strict codes + legacy aliases), signs
+# up, lands the member as pending with a welcome SMS, and proves the guard
+# rails (401/403/429, duplicate NIN, declined applicants, cross-tenant
+# tampering). The BEFORE phase boots the pinned pre-fix commit (15ac3305, the
+# parent of PR #11) to reproduce the dead-link bug. Expected: 31 passed.
+node test/signup-flow-e2e-tests.mjs
+
 # Optional live smoke (slower, spawns a real dev server on port 3432): proves
 # /admin/books compiles and answers 200 for a signed-in admin behind the
 # session proxy, using an inline GoTrue/admin_profiles stub. No assertions
