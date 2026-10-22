@@ -257,8 +257,9 @@ node test/signup-flow-e2e-tests.mjs
 # sign the member out and land them on the login screen with a success banner
 # (never a dead page or a re-run "User already registered"); the card follows
 # the reference debit-card design with the SACCO as the brand and the member
-# as cardholder, while the wallet balance survives beneath it. Expected: 21
-# passed.
+# as cardholder, while the wallet balance survives beneath it. Also pins the
+# small-screen behaviour: dimensions unchanged, every interior metric fluid
+# (clamp), so no row is ever clipped on a phone. Expected: 30 passed.
 node test/signup-completion-and-card-tests.mjs
 
 # Optional live smoke (slower, spawns a real dev server on port 3432): proves

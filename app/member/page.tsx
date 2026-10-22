@@ -1076,11 +1076,15 @@ export default function MemberDashboard() {
 
             {/* Virtual Account Card — debit-card design. The SACCO's name is
                 the brand, the member is the cardholder, the member number is
-                the card number, and MEMBER SINCE is the join date. */}
+                the card number, and MEMBER SINCE is the join date.
+                Small screens: the card keeps its exact dimensions (aspect
+                ratio, gradient, width), while every interior metric is fluid
+                (clamp(min, vw, max)) so nothing is ever clipped — the fixed-px
+                interior was what hid the bottom rows on phones. */}
             <div style={{
               position: "relative", isolation: "isolate", overflow: "hidden",
               width: "min(100%, 460px)", aspectRatio: "1.586 / 1",
-              padding: "28px 30px", borderRadius: 21, color: "#fff",
+              padding: "clamp(16px, 6vw, 28px) clamp(18px, 6.5vw, 30px)", borderRadius: 21, color: "#fff",
               background: "linear-gradient(135deg, #252a30, #11151a 65%, #20252b)",
               boxShadow: "0 22px 50px rgba(16, 24, 40, .19)",
               margin: "0 auto 16px", boxSizing: "border-box",
@@ -1091,39 +1095,39 @@ export default function MemberDashboard() {
 
               <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 23, fontWeight: 650, letterSpacing: "-0.8px" }}>
-                    <span style={{ fontSize: 31, fontWeight: 800, fontStyle: "italic" }}>{saccoBrandMark}</span>
-                    <span>{saccoName}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "clamp(5px, 2vw, 9px)", fontSize: "clamp(14px, 5vw, 23px)", fontWeight: 650, letterSpacing: "-0.8px", minWidth: 0 }}>
+                    <span style={{ fontSize: "clamp(19px, 6.7vw, 31px)", fontWeight: 800, fontStyle: "italic", flexShrink: 0 }}>{saccoBrandMark}</span>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{saccoName}</span>
                   </div>
-                  <span style={{ fontSize: 10, letterSpacing: "2.4px", color: "#d8dbe0" }}>DEBIT CARD</span>
+                  <span style={{ fontSize: "clamp(8px, 2.2vw, 10px)", letterSpacing: "2.4px", color: "#d8dbe0", flexShrink: 0 }}>DEBIT CARD</span>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 20, marginTop: "clamp(14px, 5vw, 28px)" }}>
-                  <div style={{ width: 56, height: 42, borderRadius: 8, background: "linear-gradient(135deg, #ffe9a1, #d7ae48)", border: "1px solid rgba(255,255,255,.25)", position: "relative", overflow: "hidden", flexShrink: 0 }}>
-                    <div style={{ position: "absolute", top: 0, bottom: 0, left: 18, right: 18, borderLeft: "1px solid #9e803c", borderRight: "1px solid #9e803c" }} />
-                    <div style={{ position: "absolute", left: 0, right: 0, top: 13, height: 14, borderTop: "1px solid #9e803c", borderBottom: "1px solid #9e803c" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: "clamp(12px, 4.3vw, 20px)", marginTop: "clamp(12px, 6vw, 28px)" }}>
+                  <div style={{ width: "clamp(42px, 12.2vw, 56px)", height: "clamp(32px, 9.1vw, 42px)", borderRadius: 8, background: "linear-gradient(135deg, #ffe9a1, #d7ae48)", border: "1px solid rgba(255,255,255,.25)", position: "relative", overflow: "hidden", flexShrink: 0 }}>
+                    <div style={{ position: "absolute", top: 0, bottom: 0, left: "32%", right: "32%", borderLeft: "1px solid #9e803c", borderRight: "1px solid #9e803c" }} />
+                    <div style={{ position: "absolute", left: 0, right: 0, top: "31%", height: "33%", borderTop: "1px solid #9e803c", borderBottom: "1px solid #9e803c" }} />
                   </div>
-                  <div style={{ fontSize: 31, transform: "rotate(90deg)", color: "#f1f2f4", lineHeight: 1 }}>)))</div>
+                  <div style={{ fontSize: "clamp(20px, 6.7vw, 31px)", transform: "rotate(90deg)", color: "#f1f2f4", lineHeight: 1 }}>)))</div>
                 </div>
 
-                <div style={{ marginTop: "clamp(8px, 3.5vw, 17px)", fontSize: "clamp(16px, 4vw, 23px)", letterSpacing: "2.5px", whiteSpace: "nowrap", fontWeight: 450 }}>
+                <div style={{ marginTop: "clamp(8px, 3.7vw, 17px)", fontSize: "clamp(16px, 4vw, 23px)", letterSpacing: "2.5px", whiteSpace: "nowrap", fontWeight: 450 }}>
                   {cardNumber}
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: "clamp(8px, 3.5vw, 17px)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: "clamp(8px, 3.7vw, 17px)" }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 9, letterSpacing: "1.6px", color: "#aeb4bd", marginBottom: 5 }}>CARDHOLDER</div>
-                    <div style={{ fontSize: 13, letterSpacing: "1.8px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <div style={{ fontSize: "clamp(7px, 1.95vw, 9px)", letterSpacing: "1.6px", color: "#aeb4bd", marginBottom: "clamp(3px, 1.1vw, 5px)" }}>CARDHOLDER</div>
+                    <div style={{ fontSize: "clamp(10px, 2.8vw, 13px)", letterSpacing: "1.8px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {memberObj.name.toUpperCase()}
                     </div>
-                    <div style={{ marginTop: 13, fontSize: 13, letterSpacing: "1px" }}>
-                      <small style={{ fontSize: 7, letterSpacing: "1px", marginRight: 8, color: "#c5c9d0" }}>MEMBER SINCE</small>{memberSince}
+                    <div style={{ marginTop: "clamp(8px, 2.8vw, 13px)", fontSize: "clamp(10px, 2.8vw, 13px)", letterSpacing: "1px" }}>
+                      <small style={{ fontSize: "clamp(6px, 1.2vw, 7px)", letterSpacing: "1px", marginRight: 8, color: "#c5c9d0" }}>MEMBER SINCE</small>{memberSince}
                     </div>
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", marginBottom: 1, paddingRight: 2, flexShrink: 0 }}>
-                    <div style={{ width: 43, height: 43, borderRadius: "50%", background: "#eb202d" }} />
-                    <div style={{ width: 43, height: 43, borderRadius: "50%", background: "#ff9f0a", marginLeft: -17, opacity: .96 }} />
+                    <div style={{ width: "clamp(30px, 9.3vw, 43px)", height: "clamp(30px, 9.3vw, 43px)", borderRadius: "50%", background: "#eb202d" }} />
+                    <div style={{ width: "clamp(30px, 9.3vw, 43px)", height: "clamp(30px, 9.3vw, 43px)", borderRadius: "50%", background: "#ff9f0a", marginLeft: "clamp(-17px, -3.7vw, -12px)", opacity: .96 }} />
                   </div>
                 </div>
               </div>
