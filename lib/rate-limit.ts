@@ -130,3 +130,12 @@ export const messagingLimiter = {
     if (!success) throw new Error('Rate limit exceeded');
   }
 };
+
+// 9. Data Export Limiter (admin book downloads — full-ledger CSVs are heavy)
+const _exportLimiter = createLimiter('export', 10, 60);
+export const exportLimiter = {
+  check: async (limit: number, token: string) => {
+    const { success } = await _exportLimiter.limit(token, limit);
+    if (!success) throw new Error('Too many export requests. Please wait a minute before downloading again.');
+  }
+};

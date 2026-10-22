@@ -13,7 +13,7 @@ import {
   Search, TrendingUp, Sparkles, ChevronRight,
   Filter, Check, UserCheck, UserX, Clock, Calendar, Phone, Mail, 
   FileText, Coins, Award, HelpCircle, Layers, ArrowRight, ExternalLink,
-  ChevronDown, Bell, MessageSquare, Plus, Loader2
+  ChevronDown, Bell, MessageSquare, Plus, Loader2, Download
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -122,6 +122,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
   const [smsLowBalance, setSmsLowBalance] = useState(false);
   const [smsRate, setSmsRate] = useState(50);
   const [smsHistory, setSmsHistory] = useState<any[]>([]);
+  const [exportingReport, setExportingReport] = useState<string | null>(null);
 
   // UI Controls
   const [hideBalances, setHideBalances] = useState(false);
@@ -208,6 +209,45 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
       setToastMessage({ type: 'error', text: 'Could not load the join link' });
     } finally {
       setJoinCodeBusy(false);
+    }
+  };
+
+  // ── Download SACCO Books ──────────────────────────────────────────
+  // Fetches the CSV with the admin's session token and hands the browser a
+  // file download (the API audit-logs every export).
+  const downloadReport = async (report: string) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setToastMessage({ type: 'error', text: 'Your session has expired. Please sign in again.' });
+        return;
+      }
+      setExportingReport(report);
+      const res = await fetch(`/api/admin/export?report=${encodeURIComponent(report)}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setToastMessage({ type: 'error', text: data.error || 'Could not prepare the download.' });
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition') || '';
+      const filename = /filename="([^"]+)"/.exec(disposition)?.[1] || `${report}.csv`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      const count = res.headers.get('x-rows-count');
+      setToastMessage({ type: 'success', text: `${filename} downloaded${count ? ` (${count} rows)` : ''}.` });
+    } catch {
+      setToastMessage({ type: 'error', text: 'Could not prepare the download.' });
+    } finally {
+      setExportingReport(null);
     }
   };
 
@@ -909,6 +949,60 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
         ───────────────────────────────────────────────────────────── */}
 
         {activeTab === 'overview' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          <div style={{
+            background: T.card,
+            borderRadius: 24,
+            padding: '22px 24px',
+            boxShadow: '0 4px 24px rgba(5,7,26,0.06), 0 1px 4px rgba(5,7,26,0.04)',
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 16
+          }}>
+            <div>
+              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 800, color: T.cMid }}>
+                Records &amp; Compliance
+              </div>
+              <h2 style={{ fontSize: 20, fontWeight: 900, margin: '4px 0 0', color: T.text }}>
+                Download SACCO Books
+              </h2>
+              <p style={{ fontSize: 13, color: T.sub, margin: '4px 0 0', maxWidth: 520 }}>
+                Full exports of this SACCO&apos;s records as CSV for Excel or Google Sheets — ledgers, deposits, members, loans, savings and the SMS log.
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {([
+                { key: 'ledger', label: 'General Ledger' },
+                { key: 'deposits', label: 'Deposits & Payments' },
+                { key: 'members', label: 'Member Register' },
+                { key: 'loans', label: 'Loans Book' },
+                { key: 'savings', label: 'Savings Accounts' },
+                { key: 'sms', label: 'SMS Log' },
+              ] as const).map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => downloadReport(key)}
+                  disabled={exportingReport !== null}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 7,
+                    padding: '10px 14px', borderRadius: 12,
+                    background: exportingReport === key ? T.blueLt : T.cardWarm,
+                    color: T.cRich, fontWeight: 700, fontSize: 13,
+                    border: '1px solid rgba(22,119,255,0.25)',
+                    cursor: exportingReport !== null ? 'wait' : 'pointer',
+                  }}
+                >
+                  {exportingReport === key
+                    ? <Loader2 size={15} className="animate-spin" />
+                    : <Download size={15} />}
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <AdminOverview
             saccoName={saccoName}
             greeting={greeting}
@@ -923,6 +1017,7 @@ export default function AdminConsole({ initialTab = 'overview' }: { initialTab?:
             onToggleBalances={() => setHideBalances((current) => !current)}
             onNavigate={navigateAdmin}
           />
+          </div>
         )}
 
         {/* ───────────────────────────────────────────────────────────
