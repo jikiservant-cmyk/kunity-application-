@@ -14,9 +14,34 @@
  */
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { NextRequest } from 'next/server';
 
 const ADMIN_TOKEN = 'admin-token-a';
+let staticPassed = 0;
+let staticFailed = 0;
+
+// ---------------------------------------------------------------------------
+// Static wiring: the dedicated /admin/books page
+// ---------------------------------------------------------------------------
+console.log('Books page wiring');
+{
+  const page = readFileSync('app/admin/books/page.tsx', 'utf8');
+  const console1 = readFileSync('app/admin/AdminConsole.tsx', 'utf8');
+  const overview = readFileSync('app/admin/AdminOverview.tsx', 'utf8');
+  const checks = [
+    ['/admin/books route renders the console on the books tab', /initialTab="books"/.test(page)],
+    ['AdminConsoleTab includes the books tab', /'books'/.test(overview.match(/export type AdminConsoleTab = [^;]+;/)?.[0] || '')],
+    ['sidebar has a Books entry linking /admin/books', /key: 'books', label: 'Books', href: '\/admin\/books'/.test(console1)],
+    ['the Books tab is a full page with the six report cards', /activeTab === 'books' && \([\s\S]*BOOK_REPORTS\.map/.test(console1)],
+    ['the export card is gone from the Overview dashboard', /activeTab === 'overview' && \(\s*<AdminOverview/.test(console1)],
+  ];
+  for (const [name, pass] of checks) {
+    console.log(`  ${pass ? 'ok' : 'FAIL'}  ${name}`);
+    if (pass) staticPassed++; else staticFailed++;
+  }
+}
+
 const TENANT_A = 'eeeeeee1-0000-4000-8000-000000000001';
 const TENANT_B = 'eeeeeee1-0000-4000-8000-000000000002';
 const ORG_CODE_A = 'KUN';
@@ -357,5 +382,5 @@ await check('big ledgers paginate past the 1000-row cap (no truncation)', async 
 });
 
 server.close();
-console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
+console.log(`\n${passed + staticPassed} passed (${staticPassed} page-wiring + ${passed} export API), ${failed + staticFailed} failed`);
+if (failed > 0 || staticFailed > 0) process.exit(1);

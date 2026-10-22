@@ -27,7 +27,7 @@ import {
 } from 'recharts';
 import styles from './AdminConsole.module.css';
 
-export type AdminConsoleTab = 'overview' | 'approvals' | 'members' | 'loans' | 'sms' | 'tenant';
+export type AdminConsoleTab = 'overview' | 'approvals' | 'members' | 'loans' | 'books' | 'sms' | 'tenant';
 
 type AdminStats = {
   totalMembers?: number;

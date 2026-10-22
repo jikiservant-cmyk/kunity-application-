@@ -232,10 +232,18 @@ node test/payment-waiting-screen-live-tests.mjs
 # Expected: 9 passed.
 node test/member-page-load-live-tests.mjs
 
-# Admin "Download SACCO Books": every report (ledger, deposits, members, loans,
-# savings, sms) returns Excel-safe CSV, tenant-isolated, CSV-injection hardened,
-# paginated past the 1000-row cap, and audit-logged. Expected: 14 passed.
+# Admin "SACCO Books" (/admin/books page + export API): page wiring (route, nav,
+# full-page cards, dashboard card removed) plus every report (ledger, deposits,
+# members, loans, savings, sms) returning Excel-safe CSV, tenant-isolated,
+# CSV-injection hardened, paginated past the 1000-row cap, and audit-logged.
+# Expected: 19 passed.
 npx -y tsx test/admin-export-csv-tests.mjs
+
+# Optional live smoke (slower, spawns a real dev server on port 3432): proves
+# /admin/books compiles and answers 200 for a signed-in admin behind the
+# session proxy, using an inline GoTrue/admin_profiles stub. No assertions
+# about page internals — those live in the static suite above.
+node test/books-page-smoke.mjs
 
 # Adversarial regression checks; former exploit cases must now be refused.
 node test/money-engine-adversarial-tests.mjs
